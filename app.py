@@ -1,1931 +1,2183 @@
 import os
-import time
-import random
+import re
+import io
 import base64
-from io import BytesIO
+import json
+import random
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from typing import Dict, Any, List, Optional, Tuple
 
 import streamlit as st
+import pandas as pd
+
+# Core libs
 import yaml
+from pydantic import BaseModel, Field
+from rapidfuzz import fuzz
+from PyPDF2 import PdfReader, PdfWriter
 
-# --- PDF/Text processing ---
-from PyPDF2 import PdfReader
-
-# --- AI SDKs ---
-import google.generativeai as genai
-from openai import OpenAI
-import anthropic
-from xai_sdk import Client as XAIClient
-from xai_sdk.chat import user as xai_user, system as xai_system
-
-# Optional: if you use the separate prompts module
-try:
-    from prompts import BASE_SYSTEM_PROMPT
-except ImportError:
-    BASE_SYSTEM_PROMPT = ""
+# Optional OCR / imaging
+from pdf2image import convert_from_bytes
+import pytesseract
+from PIL import Image
 
 
-# =========================
-# 1. CONFIG / CONSTANTS
-# =========================
-
-AI_MODELS = {
-    "gemini": [
-        "gemini-2.5-flash",
-        "gemini-3-flash-preview",
-        "gemini-2.5-flash-lite",
-        "gemini-3-pro-preview",
-    ],
-    "openai": [
-        "gpt-4o-mini",
-        "gpt-4.1-mini",
-    ],
-    "anthropic": [
-        "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-20241022",
-    ],
-    "xai": [
-        "grok-4-fast-reasoning",
-        "grok-4-1-fast-non-reasoning",
-    ],
+# -----------------------------
+# i18n
+# -----------------------------
+STRINGS = {
+    "en": {
+        "app_title": "FDA 510(k) Review Studio — Regulatory Command Center",
+        "settings": "Settings",
+        "theme": "Theme",
+        "language": "Language",
+        "style": "Painter Style",
+        "jackpot": "Jackpot",
+        "library": "Library",
+        "datasets": "Datasets",
+        "agents": "Agents",
+        "skills": "SKILL.md",
+        "workspace": "Workspace",
+        "source_material": "Source Material",
+        "intelligence_deck": "Intelligence Deck",
+        "pdf_viewer": "PDF Viewer",
+        "ocr_editor": "OCR Editor",
+        "raw_text": "Raw Text",
+        "agent_outputs": "Agent Outputs",
+        "search_results": "Search Results",
+        "final_report": "Final Report",
+        "run_agent": "Run Agent",
+        "api_keys": "API Keys",
+        "managed_by_system": "Managed by System",
+        "missing_key": "Missing — enter on this page",
+        "global_search": "Global Search (device, K#, UDI, product code...)",
+        "note_keeper": "AI Note Keeper",
+        "paste_note": "Paste text/markdown",
+        "upload_note": "Upload PDF/TXT/MD",
+        "ai_magics": "AI Magics",
+        "max_tokens": "Max tokens",
+        "model": "Model",
+        "provider": "Provider",
+        "system_prompt": "System prompt",
+        "user_prompt": "User prompt",
+        "execute_next": "Execute next agent",
+        "edit_output_for_next": "Edit output used as input to next agent",
+        "mode": "Mode",
+        "command_center": "Command Center",
+        "status": "Status",
+        "ocr": "OCR",
+        "trim_extract": "Trim + Extract",
+        "trim_pages": "Trim pages",
+        "page_ranges": "Page ranges",
+        "ocr_engine": "OCR engine",
+        "ocr_pages": "OCR pages",
+        "vision_ocr": "Vision OCR",
+        "local_ocr": "Local OCR (Tesseract)",
+        "extract_text": "Extract text (PyPDF2)",
+        "render_pdf": "Render PDF preview",
+        "download_trimmed": "Download trimmed PDF",
+        "danger_zone": "Danger Zone",
+        "clear_session": "Clear session state",
+        "dashboard": "Interactive Dashboard",
+        "device360": "360° Device View",
+        "kpi": "KPIs",
+        "recall_class": "Recall Class",
+        "mdr_count": "MDR Count",
+        "loaded": "Loaded",
+        "empty": "Empty",
+        "agent_input_source": "Agent input source",
+        "use_last_output": "Use last edited agent output (preferred)",
+        "use_ocr_text": "Use OCR text",
+        "use_raw_text": "Use raw extracted text",
+        "notes_to_md": "Transform note into organized Markdown",
+        "apply": "Apply",
+        "run_magic": "Run Magic",
+        "render": "Render",
+        "markdown_edit": "Markdown Edit",
+        "text_edit": "Text Edit",
+        "keywords": "Keywords",
+        "keyword_colors": "Keyword Colors",
+        "add_keywords": "Add keyword-color pairs",
+        "download": "Download",
+        "upload": "Upload",
+        "save": "Save",
+        "standardized_loaded": "agents.yaml standardized and loaded.",
+        "invalid_agents": "agents.yaml invalid",
+        "fab_hint": "FAB is visual; run agents in Agent Outputs tab.",
+    },
+    "zh-TW": {
+        "app_title": "FDA 510(k) 審查工作室 — 法規指揮中心",
+        "settings": "設定",
+        "theme": "主題",
+        "language": "語言",
+        "style": "畫家風格",
+        "jackpot": "隨機開獎",
+        "library": "資料庫",
+        "datasets": "資料集",
+        "agents": "代理 (Agents)",
+        "skills": "SKILL.md",
+        "workspace": "工作區",
+        "source_material": "來源資料",
+        "intelligence_deck": "智慧卡組",
+        "pdf_viewer": "PDF 檢視",
+        "ocr_editor": "OCR 編輯器",
+        "raw_text": "原始文字",
+        "agent_outputs": "代理輸出",
+        "search_results": "搜尋結果",
+        "final_report": "最終報告",
+        "run_agent": "執行代理",
+        "api_keys": "API 金鑰",
+        "managed_by_system": "由系統管理",
+        "missing_key": "未設定 — 請在網頁輸入",
+        "global_search": "全域搜尋（裝置、K號、UDI、產品代碼…）",
+        "note_keeper": "AI 筆記整理",
+        "paste_note": "貼上文字/Markdown",
+        "upload_note": "上傳 PDF/TXT/MD",
+        "ai_magics": "AI 魔法",
+        "max_tokens": "最大 tokens",
+        "model": "模型",
+        "provider": "供應商",
+        "system_prompt": "系統提示詞",
+        "user_prompt": "使用者提示詞",
+        "execute_next": "執行下一個代理",
+        "edit_output_for_next": "編輯輸出（作為下一代理的輸入）",
+        "mode": "模式",
+        "command_center": "指揮中心",
+        "status": "狀態",
+        "ocr": "OCR",
+        "trim_extract": "裁切 + 擷取",
+        "trim_pages": "裁切頁面",
+        "page_ranges": "頁碼範圍",
+        "ocr_engine": "OCR 引擎",
+        "ocr_pages": "OCR 頁面",
+        "vision_ocr": "視覺 OCR（Vision）",
+        "local_ocr": "本機 OCR（Tesseract）",
+        "extract_text": "文字擷取（PyPDF2）",
+        "render_pdf": "顯示 PDF 預覽",
+        "download_trimmed": "下載裁切 PDF",
+        "danger_zone": "危險區",
+        "clear_session": "清除 session 狀態",
+        "dashboard": "互動儀表板",
+        "device360": "360° 裝置視角",
+        "kpi": "關鍵指標",
+        "recall_class": "召回等級",
+        "mdr_count": "不良事件數",
+        "loaded": "已載入",
+        "empty": "空",
+        "agent_input_source": "代理輸入來源",
+        "use_last_output": "使用上次代理的已編修輸出（優先）",
+        "use_ocr_text": "使用 OCR 文字",
+        "use_raw_text": "使用原始擷取文字",
+        "notes_to_md": "將筆記轉為有組織的 Markdown",
+        "apply": "套用",
+        "run_magic": "執行魔法",
+        "render": "呈現",
+        "markdown_edit": "Markdown 編輯",
+        "text_edit": "文字編輯",
+        "keywords": "關鍵詞",
+        "keyword_colors": "關鍵詞上色",
+        "add_keywords": "新增 關鍵詞-顏色 對",
+        "download": "下載",
+        "upload": "上傳",
+        "save": "儲存",
+        "standardized_loaded": "agents.yaml 已標準化並載入。",
+        "invalid_agents": "agents.yaml 無效",
+        "fab_hint": "浮動按鈕為視覺效果；請在「代理輸出」分頁執行。",
+    },
 }
 
-LANG_LABELS = {
-    "en": "English",
-    "zh": "繁體中文",
-}
 
-THEME_MODE_LABELS = {
-    "light": "Light",
-    "dark": "Dark",
-}
+def t(lang: str, key: str) -> str:
+    return STRINGS.get(lang, STRINGS["en"]).get(key, key)
 
-# 20 painter-based “WOW” themes
-PAINTER_THEMES = [
+
+# -----------------------------
+# Painter styles (20)
+# -----------------------------
+PAINTER_STYLES = [
+    {"id": "monet", "name": "Claude Monet", "accent": "#7FB3D5"},
+    {"id": "vangogh", "name": "Vincent van Gogh", "accent": "#F4D03F"},
+    {"id": "picasso", "name": "Pablo Picasso", "accent": "#AF7AC5"},
+    {"id": "rembrandt", "name": "Rembrandt", "accent": "#D4AC0D"},
+    {"id": "vermeer", "name": "Johannes Vermeer", "accent": "#5DADE2"},
+    {"id": "hokusai", "name": "Hokusai", "accent": "#48C9B0"},
+    {"id": "klimt", "name": "Gustav Klimt", "accent": "#F5CBA7"},
+    {"id": "kahlo", "name": "Frida Kahlo", "accent": "#EC7063"},
+    {"id": "pollock", "name": "Jackson Pollock", "accent": "#58D68D"},
+    {"id": "cezanne", "name": "Paul Cézanne", "accent": "#F0B27A"},
+    {"id": "turner", "name": "J.M.W. Turner", "accent": "#F5B041"},
+    {"id": "matisse", "name": "Henri Matisse", "accent": "#EB984E"},
+    {"id": "dali", "name": "Salvador Dalí", "accent": "#85C1E9"},
+    {"id": "warhol", "name": "Andy Warhol", "accent": "#FF5DA2"},
+    {"id": "sargent", "name": "John Singer Sargent", "accent": "#AED6F1"},
+    {"id": "rothko", "name": "Mark Rothko", "accent": "#CD6155"},
+    {"id": "caravaggio", "name": "Caravaggio", "accent": "#A04000"},
+    {"id": "okeeffe", "name": "Georgia O’Keeffe", "accent": "#F1948A"},
+    {"id": "seurat", "name": "Georges Seurat", "accent": "#76D7C4"},
+    {"id": "basquiat", "name": "Jean-Michel Basquiat", "accent": "#F7DC6F"},
+]
+
+
+def jackpot_style():
+    return random.choice(PAINTER_STYLES)
+
+
+# -----------------------------
+# CSS theme injection (Glassmorphism + Coral)
+# -----------------------------
+def inject_css(theme: str, painter_accent: str, coral: str = "#FF7F50"):
+    if theme == "light":
+        bg = "#F6F7FB"
+        fg = "#0B1020"
+        card = "rgba(10, 16, 32, 0.04)"
+        border = "rgba(10, 16, 32, 0.10)"
+        shadow = "rgba(10, 16, 32, 0.10)"
+    else:
+        bg = "#0B1020"
+        fg = "#EAF0FF"
+        card = "rgba(255,255,255,0.06)"
+        border = "rgba(255,255,255,0.10)"
+        shadow = "rgba(0,0,0,0.35)"
+
+    return f"""
+    <style>
+      :root {{
+        --bg: {bg};
+        --fg: {fg};
+        --card: {card};
+        --border: {border};
+        --accent: {painter_accent};
+        --coral: {coral};
+        --ok: #2ECC71;
+        --warn: #F1C40F;
+        --bad: #E74C3C;
+        --shadow: {shadow};
+      }}
+
+      .stApp {{
+        background:
+          radial-gradient(1200px 600px at 20% 0%, rgba(255,127,80,0.12), transparent 60%),
+          radial-gradient(900px 500px at 80% 10%, rgba(0,200,255,0.10), transparent 55%),
+          var(--bg);
+        color: var(--fg);
+      }}
+
+      /* Glass card */
+      .wow-card {{
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px 14px;
+        backdrop-filter: blur(12px);
+        box-shadow: 0 18px 55px var(--shadow);
+      }}
+
+      /* Smaller glass */
+      .wow-mini {{
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 10px 12px;
+        backdrop-filter: blur(12px);
+      }}
+
+      /* Chips */
+      .chip {{
+        display:inline-flex;
+        align-items:center;
+        gap:8px;
+        padding: 6px 10px;
+        margin: 0 8px 8px 0;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        font-size: 12px;
+        line-height: 1;
+      }}
+      .dot {{
+        width: 9px; height: 9px; border-radius: 99px;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px rgba(255,255,255,0.06);
+      }}
+
+      /* Coral reserved */
+      .coral {{
+        color: var(--coral);
+        font-weight: 800;
+      }}
+
+      /* Editor frame */
+      .editor-frame {{
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px;
+        background: rgba(0,0,0,0.00);
+      }}
+
+      /* Dashboard grid vibe */
+      div[data-testid="stDataFrame"] {{
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+      }}
+
+      /* A simple visual floating action button (non-functional) */
+      .fab {{
+        position: fixed;
+        bottom: 22px;
+        right: 26px;
+        z-index: 9999;
+        border-radius: 999px;
+        padding: 12px 16px;
+        background: linear-gradient(135deg, var(--accent), var(--coral));
+        color: white;
+        font-weight: 900;
+        border: 0px;
+        box-shadow: 0 22px 55px rgba(0,0,0,0.45);
+        letter-spacing: 0.5px;
+      }}
+      .fab-sub {{
+        position: fixed;
+        bottom: 70px;
+        right: 26px;
+        z-index: 9999;
+        font-size: 12px;
+        padding: 8px 10px;
+        border-radius: 12px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        backdrop-filter: blur(10px);
+      }}
+
+      /* Make Streamlit headers tighter */
+      h1, h2, h3, h4 {{
+        margin-top: 0.2rem;
+      }}
+    </style>
+    """
+
+
+# -----------------------------
+# Default datasets (embedded)
+# -----------------------------
+DEFAULT_510K = [
     {
-        "id": "vangogh_starry",
-        "name_en": "Van Gogh · Starry Night",
-        "name_zh": "梵谷·星夜",
-        "primary": "#1B3B6F",
-        "secondary": "#F4D03F",
-        "accent": "#F39C12",
-        "bg": "#0B1020",
+        "k_number": "K240123",
+        "decision_date": "2024-02-14",
+        "decision": "SESE",
+        "device_name": "FlowPilot FP-2 Infusion Pump",
+        "applicant": "NorthRiver Devices LLC",
+        "manufacturer_name": "NorthRiver Devices LLC",
+        "product_code": "FRN",
+        "regulation_number": "880.5725",
+        "device_class": "II",
+        "panel": "Anesthesiology",
+        "review_advisory_committee": "General Hospital",
+        "predicate_k_numbers": ["K201111", "K210455"],
+        "summary": "Substantial equivalence based on intended use and technological characteristics; added battery monitoring enhancement.",
     },
     {
-        "id": "monet_waterlilies",
-        "name_en": "Monet · Water Lilies",
-        "name_zh": "莫內·睡蓮",
-        "primary": "#5DADE2",
-        "secondary": "#ABEBC6",
-        "accent": "#F9E79F",
-        "bg": "#F4F9FB",
+        "k_number": "K240305",
+        "decision_date": "2024-03-27",
+        "decision": "SESE",
+        "device_name": "StapleWave SW-45 Surgical Stapler",
+        "applicant": "BlueWave Surgical Co.",
+        "manufacturer_name": "BlueWave Surgical Co.",
+        "product_code": "GAG",
+        "regulation_number": "878.4750",
+        "device_class": "II",
+        "panel": "General & Plastic Surgery",
+        "review_advisory_committee": "Surgery",
+        "predicate_k_numbers": ["K193210"],
+        "summary": "SE determination with design changes in handle ergonomics; staple formation equivalent under bench testing.",
     },
     {
-        "id": "klimt_gold",
-        "name_en": "Klimt · Golden Leaf",
-        "name_zh": "克林姆·金色",
-        "primary": "#D4AC0D",
-        "secondary": "#FAD7A0",
-        "accent": "#CD6155",
-        "bg": "#FEF9E7",
+        "k_number": "K240402",
+        "decision_date": "2024-04-30",
+        "decision": "SESE",
+        "device_name": "StapleWave Cartridge SWC-45",
+        "applicant": "BlueWave Surgical Co.",
+        "manufacturer_name": "BlueWave Surgical Co.",
+        "product_code": "GAB",
+        "regulation_number": "878.4750",
+        "device_class": "II",
+        "panel": "General & Plastic Surgery",
+        "review_advisory_committee": "Surgery",
+        "predicate_k_numbers": ["K182909"],
+        "summary": "SE based on equivalent staple line performance; labeling updated for compatible stapler models.",
     },
     {
-        "id": "picasso_blue",
-        "name_en": "Picasso · Blue Period",
-        "name_zh": "畢卡索·藍色時期",
-        "primary": "#154360",
-        "secondary": "#5DADE2",
-        "accent": "#A569BD",
-        "bg": "#EBF5FB",
+        "k_number": "K240588",
+        "decision_date": "2024-06-21",
+        "decision": "SESE",
+        "device_name": "RespiraScan Panel",
+        "applicant": "Sunrise Diagnostics Ltd.",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "product_code": "OUI",
+        "regulation_number": "866.3980",
+        "device_class": "II",
+        "panel": "Microbiology",
+        "review_advisory_committee": "Microbiology",
+        "predicate_k_numbers": ["K220900"],
+        "summary": "SE for multiplex respiratory panel; performance evaluated against comparator methods and reference materials.",
     },
     {
-        "id": "hokusai_wave",
-        "name_en": "Hokusai · Great Wave",
-        "name_zh": "北齋·神奈川沖浪裏",
-        "primary": "#154360",
-        "secondary": "#1ABC9C",
-        "accent": "#E67E22",
-        "bg": "#ECF0F1",
+        "k_number": "K230990",
+        "decision_date": "2023-12-08",
+        "decision": "SESE",
+        "device_name": "RespiraScan Analyzer RSA-200",
+        "applicant": "Sunrise Diagnostics Ltd.",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "product_code": "OHT",
+        "regulation_number": "862.2570",
+        "device_class": "II",
+        "panel": "Clinical Chemistry",
+        "review_advisory_committee": "Chemistry",
+        "predicate_k_numbers": ["K210120"],
+        "summary": "SE based on equivalent amplification/detection workflow; software features documented in cybersecurity file.",
     },
     {
-        "id": "matisse_cutouts",
-        "name_en": "Matisse · Cut-Outs",
-        "name_zh": "馬諦斯·剪紙",
-        "primary": "#E74C3C",
-        "secondary": "#3498DB",
-        "accent": "#F1C40F",
-        "bg": "#FDFEFE",
+        "k_number": "K241010",
+        "decision_date": "2024-10-02",
+        "decision": "SESE",
+        "device_name": "OrchiFill Dermal Filler",
+        "applicant": "Orchid Aesthetics Corp.",
+        "manufacturer_name": "Orchid Aesthetics Corp.",
+        "product_code": "LMH",
+        "regulation_number": "878.3500",
+        "device_class": "III",
+        "panel": "General & Plastic Surgery",
+        "review_advisory_committee": "Surgery",
+        "predicate_k_numbers": ["K221777"],
+        "summary": "SE with emphasis on biocompatibility and clinical performance evidence provided by applicant.",
     },
     {
-        "id": "rothko_sunset",
-        "name_en": "Rothko · Sunset Fields",
-        "name_zh": "羅斯科·暮色",
-        "primary": "#922B21",
-        "secondary": "#E59866",
-        "accent": "#AF601A",
-        "bg": "#FDF2E9",
-    },
-    {
-        "id": "dali_surreal",
-        "name_en": "Dali · Surreal Sands",
-        "name_zh": "達利·超現實",
-        "primary": "#7D6608",
-        "secondary": "#F8C471",
-        "accent": "#1F618D",
-        "bg": "#FEF5E7",
-    },
-    {
-        "id": "turner_mist",
-        "name_en": "Turner · Misty Harbor",
-        "name_zh": "透納·迷霧港灣",
-        "primary": "#566573",
-        "secondary": "#AEB6BF",
-        "accent": "#F7DC6F",
-        "bg": "#F8F9F9",
-    },
-    {
-        "id": "pollock_drip",
-        "name_en": "Pollock · Drip Energy",
-        "name_zh": "波洛克·飛濺",
-        "primary": "#2E86C1",
-        "secondary": "#F4D03F",
-        "accent": "#C0392B",
-        "bg": "#FBFCFC",
-    },
-    {
-        "id": "seurat_pointillism",
-        "name_en": "Seurat · Pointillism",
-        "name_zh": "修拉·點彩",
-        "primary": "#1F618D",
-        "secondary": "#F7DC6F",
-        "accent": "#52BE80",
-        "bg": "#FDFEFE",
-    },
-    {
-        "id": "frida_viva",
-        "name_en": "Frida · Viva Color",
-        "name_zh": "芙烈達·生命色塊",
-        "primary": "#196F3D",
-        "secondary": "#EC7063",
-        "accent": "#F4D03F",
-        "bg": "#FEF9E7",
-    },
-    {
-        "id": "cezanne_mountains",
-        "name_en": "Cézanne · Mountains",
-        "name_zh": "塞尚·群山",
-        "primary": "#2E86C1",
-        "secondary": "#A9CCE3",
-        "accent": "#58D68D",
-        "bg": "#EBF5FB",
-    },
-    {
-        "id": "bosch_fantasy",
-        "name_en": "Bosch · Dreamscape",
-        "name_zh": "波希·夢境",
-        "primary": "#512E5F",
-        "secondary": "#A569BD",
-        "accent": "#F5B041",
-        "bg": "#FDF2E9",
-    },
-    {
-        "id": "rembrandt_chiaroscuro",
-        "name_en": "Rembrandt · Chiaroscuro",
-        "name_zh": "林布蘭·明暗",
-        "primary": "#6E2C00",
-        "secondary": "#CA6F1E",
-        "accent": "#F7DC6F",
-        "bg": "#FBEEE6",
-    },
-    {
-        "id": "vermeer_light",
-        "name_en": "Vermeer · Soft Light",
-        "name_zh": "維梅爾·靜光",
-        "primary": "#1F618D",
-        "secondary": "#F7DC6F",
-        "accent": "#A2D9CE",
-        "bg": "#FEF9E7",
-    },
-    {
-        "id": "kandinsky_abstract",
-        "name_en": "Kandinsky · Abstract Rhythm",
-        "name_zh": "康丁斯基·抽象律動",
-        "primary": "#2E86C1",
-        "secondary": "#F4D03F",
-        "accent": "#E74C3C",
-        "bg": "#FBFCFC",
-    },
-    {
-        "id": "chagall_dream",
-        "name_en": "Chagall · Midnight Dream",
-        "name_zh": "夏卡爾·午夜夢",
-        "primary": "#1A237E",
-        "secondary": "#5C6BC0",
-        "accent": "#FFCA28",
-        "bg": "#E8EAF6",
-    },
-    {
-        "id": "yayoi_polka",
-        "name_en": "Yayoi Kusama · Polka Infinity",
-        "name_zh": "草間彌生·圓點無限",
-        "primary": "#C0392B",
-        "secondary": "#F7DC6F",
-        "accent": "#27AE60",
-        "bg": "#FDEDEC",
-    },
-    {
-        "id": "haring_pop",
-        "name_en": "Keith Haring · Pop Lines",
-        "name_zh": "哈林·塗鴉線條",
-        "primary": "#212F3C",
-        "secondary": "#E74C3C",
-        "accent": "#F1C40F",
-        "bg": "#FDFEFE",
+        "k_number": "K240777",
+        "decision_date": "2024-08-19",
+        "decision": "SESE",
+        "device_name": "HarborDrive HD-8 Powered Wheelchair",
+        "applicant": "Harbor Mobility Systems",
+        "manufacturer_name": "Harbor Mobility Systems",
+        "product_code": "ITI",
+        "regulation_number": "890.3860",
+        "device_class": "II",
+        "panel": "Physical Medicine",
+        "review_advisory_committee": "Rehabilitation",
+        "predicate_k_numbers": ["K200333"],
+        "summary": "SE based on equivalent mobility performance; updated control firmware and battery configuration.",
     },
 ]
 
-CORAL_COLOR = "#FF7F50"
+DEFAULT_ADR = [
+    {
+        "adverse_event_id": "MDR-2024-000001",
+        "report_date": "2024-04-22",
+        "event_type": "Malfunction",
+        "patient_outcome": "Serious Injury",
+        "device_problem": "Misfire / Failure to staple",
+        "manufacturer_name": "BlueWave Surgical Co.",
+        "brand_name": "StapleWave",
+        "product_code": "GAG",
+        "device_class": "II",
+        "udi_di": "00666099000034",
+        "recall_number_link": "Z-0421-2024",
+        "narrative": "During surgery, stapler misfired; surgeon used alternative device. Patient experienced bleeding requiring additional intervention.",
+    },
+    {
+        "adverse_event_id": "MDR-2024-000002",
+        "report_date": "2024-03-18",
+        "event_type": "Malfunction",
+        "patient_outcome": "Hospitalization",
+        "device_problem": "Lead fracture",
+        "manufacturer_name": "Acme MedTech, Inc.",
+        "brand_name": "PulseSure Lead",
+        "product_code": "DTB",
+        "device_class": "III",
+        "udi_di": "00812345000029",
+        "recall_number_link": "Z-0333-2024",
+        "narrative": "Loss of capture suspected; imaging indicated possible lead integrity issue. Patient hospitalized for revision planning.",
+    },
+    {
+        "adverse_event_id": "MDR-2024-000003",
+        "report_date": "2024-09-19",
+        "event_type": "Malfunction",
+        "patient_outcome": "Death",
+        "device_problem": "Premature battery depletion",
+        "manufacturer_name": "Acme MedTech, Inc.",
+        "brand_name": "PulseSure",
+        "product_code": "DXY",
+        "device_class": "III",
+        "udi_di": "00812345000012",
+        "recall_number_link": "Z-0777-2024",
+        "narrative": "Device reached ERI unexpectedly; therapy interruption suspected. Patient later died; causality not confirmed in report.",
+    },
+    {
+        "adverse_event_id": "MDR-2024-000004",
+        "report_date": "2024-02-05",
+        "event_type": "Malfunction",
+        "patient_outcome": "No Injury",
+        "device_problem": "Unexpected shutdown",
+        "manufacturer_name": "NorthRiver Devices LLC",
+        "brand_name": "FlowPilot",
+        "product_code": "FRN",
+        "device_class": "II",
+        "udi_di": "00777001000018",
+        "recall_number_link": "Z-0189-2024",
+        "narrative": "Pump shut down during routine use; alarm sounded. No reported injury; infusion was restarted after battery replacement.",
+    },
+    {
+        "adverse_event_id": "MDR-2024-000005",
+        "report_date": "2024-06-04",
+        "event_type": "Malfunction",
+        "patient_outcome": "No Injury",
+        "device_problem": "Leakage",
+        "manufacturer_name": "NorthRiver Devices LLC",
+        "brand_name": "FlowPilot Set",
+        "product_code": "FPA",
+        "device_class": "II",
+        "udi_di": "00777001000025",
+        "recall_number_link": "Z-0510-2024",
+        "narrative": "Connector leakage observed; user replaced infusion set. No injury reported.",
+    },
+    {
+        "adverse_event_id": "MDR-2025-000006",
+        "report_date": "2025-01-22",
+        "event_type": "Injury",
+        "patient_outcome": "Serious Injury",
+        "device_problem": "False negative test result",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "brand_name": "RespiraScan Panel",
+        "product_code": "OUI",
+        "device_class": "II",
+        "udi_di": "00999111000057",
+        "recall_number_link": "Z-0103-2025",
+        "narrative": "Patient initially tested negative; later confirmed positive. Delay in treatment alleged. Investigation pending.",
+    },
+    {
+        "adverse_event_id": "MDR-2023-000007",
+        "report_date": "2023-11-03",
+        "event_type": "Malfunction",
+        "patient_outcome": "No Injury",
+        "device_problem": "Software error code",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "brand_name": "RespiraScan Analyzer",
+        "product_code": "OHT",
+        "device_class": "II",
+        "udi_di": "00999111000064",
+        "recall_number_link": "Z-0602-2023",
+        "narrative": "Analyzer displayed intermittent error; test run restarted. No patient impact reported.",
+    },
+    {
+        "adverse_event_id": "MDR-2024-000008",
+        "report_date": "2024-12-20",
+        "event_type": "Injury",
+        "patient_outcome": "Other Serious",
+        "device_problem": "Allergic reaction",
+        "manufacturer_name": "Orchid Aesthetics Corp.",
+        "brand_name": "OrchiFill Kit",
+        "product_code": "FMF",
+        "device_class": "II",
+        "udi_di": "00444988000101",
+        "recall_number_link": "Z-0934-2024",
+        "narrative": "Patient reported allergic reaction consistent with latex sensitivity; IFU did not indicate latex presence per reporter.",
+    },
+    {
+        "adverse_event_id": "MDR-2024-000009",
+        "report_date": "2024-08-26",
+        "event_type": "Malfunction",
+        "patient_outcome": "No Injury",
+        "device_problem": "Battery overheating",
+        "manufacturer_name": "Harbor Mobility Systems",
+        "brand_name": "HarborDrive Battery",
+        "product_code": "KJP",
+        "device_class": "II",
+        "udi_di": "00555123000088",
+        "recall_number_link": None,
+        "narrative": "Battery pack became warm during charging; user discontinued charging. No injury; device inspected by service center.",
+    },
+    {
+        "adverse_event_id": "MDR-2025-000010",
+        "report_date": "2025-01-09",
+        "event_type": "Malfunction",
+        "patient_outcome": "No Injury",
+        "device_problem": "User manual missing troubleshooting section",
+        "manufacturer_name": "Harbor Mobility Systems",
+        "brand_name": "HarborDrive",
+        "product_code": "ITI",
+        "device_class": "II",
+        "udi_di": "00555123000071",
+        "recall_number_link": "Z-0144-2025",
+        "narrative": "User reported inability to resolve warning indicator due to missing troubleshooting content in manual; no injury.",
+    },
+]
+
+DEFAULT_GUDID = [
+    {
+        "primary_di": "00812345000012",
+        "udi_di": "00812345000012",
+        "device_description": "Implantable cardiac pulse generator",
+        "device_class": "III",
+        "manufacturer_name": "Acme MedTech, Inc.",
+        "brand_name": "PulseSure",
+        "product_code": "DXY",
+        "gmdn_term": "Cardiac pulse generator, implantable",
+        "mri_safety": "MR Conditional",
+        "sterile": True,
+        "single_use": False,
+        "implantable": True,
+        "contains_nrl": False,
+        "version_or_model_number": "PS-3000",
+        "catalog_number": "AC-PS3000",
+        "record_status": "Published",
+        "publish_date": "2024-03-14",
+        "company_contact_email": "regulatory@acmemedtech.example",
+        "company_contact_phone": "+1-301-555-0101",
+        "company_state": "MD",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00812345000029",
+        "udi_di": "00812345000029",
+        "device_description": "Cardiac lead, pacing, silicone insulated",
+        "device_class": "III",
+        "manufacturer_name": "Acme MedTech, Inc.",
+        "brand_name": "PulseSure Lead",
+        "product_code": "DTB",
+        "gmdn_term": "Cardiac pacing lead",
+        "mri_safety": "MR Conditional",
+        "sterile": True,
+        "single_use": True,
+        "implantable": True,
+        "contains_nrl": False,
+        "version_or_model_number": "PSL-20",
+        "catalog_number": "AC-PSL20",
+        "record_status": "Published",
+        "publish_date": "2024-05-01",
+        "company_contact_email": "regulatory@acmemedtech.example",
+        "company_contact_phone": "+1-301-555-0101",
+        "company_state": "MD",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00777001000018",
+        "udi_di": "00777001000018",
+        "device_description": "Infusion pump, programmable ambulatory",
+        "device_class": "II",
+        "manufacturer_name": "NorthRiver Devices LLC",
+        "brand_name": "FlowPilot",
+        "product_code": "FRN",
+        "gmdn_term": "Infusion pump, ambulatory",
+        "mri_safety": "Not Evaluated",
+        "sterile": False,
+        "single_use": False,
+        "implantable": False,
+        "contains_nrl": False,
+        "version_or_model_number": "FP-2",
+        "catalog_number": "NR-FP2",
+        "record_status": "Published",
+        "publish_date": "2023-11-20",
+        "company_contact_email": "qa@northriver.example",
+        "company_contact_phone": "+1-617-555-0123",
+        "company_state": "MA",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00777001000025",
+        "udi_di": "00777001000025",
+        "device_description": "Infusion set, sterile, single-use",
+        "device_class": "II",
+        "manufacturer_name": "NorthRiver Devices LLC",
+        "brand_name": "FlowPilot Set",
+        "product_code": "FPA",
+        "gmdn_term": "Infusion set",
+        "mri_safety": "Not Evaluated",
+        "sterile": True,
+        "single_use": True,
+        "implantable": False,
+        "contains_nrl": True,
+        "version_or_model_number": "FS-1",
+        "catalog_number": "NR-FS1",
+        "record_status": "Published",
+        "publish_date": "2024-01-18",
+        "company_contact_email": "qa@northriver.example",
+        "company_contact_phone": "+1-617-555-0123",
+        "company_state": "MA",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00666099000034",
+        "udi_di": "00666099000034",
+        "device_description": "Surgical stapler, single-use",
+        "device_class": "II",
+        "manufacturer_name": "BlueWave Surgical Co.",
+        "brand_name": "StapleWave",
+        "product_code": "GAG",
+        "gmdn_term": "Surgical stapler, disposable",
+        "mri_safety": "Not Evaluated",
+        "sterile": True,
+        "single_use": True,
+        "implantable": False,
+        "contains_nrl": False,
+        "version_or_model_number": "SW-45",
+        "catalog_number": "BW-SW45",
+        "record_status": "Published",
+        "publish_date": "2024-06-09",
+        "company_contact_email": "complaints@bluewavesurg.example",
+        "company_contact_phone": "+1-312-555-0190",
+        "company_state": "IL",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00666099000041",
+        "udi_di": "00666099000041",
+        "device_description": "Staple cartridge, sterile, single-use",
+        "device_class": "II",
+        "manufacturer_name": "BlueWave Surgical Co.",
+        "brand_name": "StapleWave Cartridge",
+        "product_code": "GAB",
+        "gmdn_term": "Staple cartridge",
+        "mri_safety": "Not Evaluated",
+        "sterile": True,
+        "single_use": True,
+        "implantable": False,
+        "contains_nrl": False,
+        "version_or_model_number": "SWC-45",
+        "catalog_number": "BW-SWC45",
+        "record_status": "Published",
+        "publish_date": "2024-06-09",
+        "company_contact_email": "complaints@bluewavesurg.example",
+        "company_contact_phone": "+1-312-555-0190",
+        "company_state": "IL",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00999111000057",
+        "udi_di": "00999111000057",
+        "device_description": "In vitro diagnostic test, respiratory panel",
+        "device_class": "II",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "brand_name": "RespiraScan Panel",
+        "product_code": "OUI",
+        "gmdn_term": "Respiratory pathogen assay",
+        "mri_safety": "Not Applicable",
+        "sterile": False,
+        "single_use": True,
+        "implantable": False,
+        "contains_nrl": False,
+        "version_or_model_number": "RSP-1",
+        "catalog_number": "SD-RSP1",
+        "record_status": "Published",
+        "publish_date": "2024-02-07",
+        "company_contact_email": "support@sunrisedx.example",
+        "company_contact_phone": "+1-206-555-0142",
+        "company_state": "WA",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00999111000064",
+        "udi_di": "00999111000064",
+        "device_description": "In vitro diagnostic instrument, PCR analyzer",
+        "device_class": "II",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "brand_name": "RespiraScan Analyzer",
+        "product_code": "OHT",
+        "gmdn_term": "PCR analyzer",
+        "mri_safety": "Not Applicable",
+        "sterile": False,
+        "single_use": False,
+        "implantable": False,
+        "contains_nrl": False,
+        "version_or_model_number": "RSA-200",
+        "catalog_number": "SD-RSA200",
+        "record_status": "Published",
+        "publish_date": "2023-09-28",
+        "company_contact_email": "support@sunrisedx.example",
+        "company_contact_phone": "+1-206-555-0142",
+        "company_state": "WA",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00555123000071",
+        "udi_di": "00555123000071",
+        "device_description": "Wheelchair, powered",
+        "device_class": "II",
+        "manufacturer_name": "Harbor Mobility Systems",
+        "brand_name": "HarborDrive",
+        "product_code": "ITI",
+        "gmdn_term": "Wheelchair, powered",
+        "mri_safety": "Not Evaluated",
+        "sterile": False,
+        "single_use": False,
+        "implantable": False,
+        "contains_nrl": False,
+        "version_or_model_number": "HD-8",
+        "catalog_number": "HM-HD8",
+        "record_status": "Published",
+        "publish_date": "2023-06-03",
+        "company_contact_email": "service@harbormobility.example",
+        "company_contact_phone": "+1-503-555-0166",
+        "company_state": "OR",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00555123000088",
+        "udi_di": "00555123000088",
+        "device_description": "Wheelchair battery pack",
+        "device_class": "II",
+        "manufacturer_name": "Harbor Mobility Systems",
+        "brand_name": "HarborDrive Battery",
+        "product_code": "KJP",
+        "gmdn_term": "Battery, rechargeable",
+        "mri_safety": "Not Evaluated",
+        "sterile": False,
+        "single_use": False,
+        "implantable": False,
+        "contains_nrl": False,
+        "version_or_model_number": "HB-24",
+        "catalog_number": "HM-HB24",
+        "record_status": "Published",
+        "publish_date": "2024-08-12",
+        "company_contact_email": "service@harbormobility.example",
+        "company_contact_phone": "+1-503-555-0166",
+        "company_state": "OR",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00444988000095",
+        "udi_di": "00444988000095",
+        "device_description": "Dermal filler, hyaluronic acid",
+        "device_class": "III",
+        "manufacturer_name": "Orchid Aesthetics Corp.",
+        "brand_name": "OrchiFill",
+        "product_code": "LMH",
+        "gmdn_term": "Dermal filler",
+        "mri_safety": "Not Applicable",
+        "sterile": True,
+        "single_use": True,
+        "implantable": True,
+        "contains_nrl": False,
+        "version_or_model_number": "OF-HA2",
+        "catalog_number": "OA-OFHA2",
+        "record_status": "Published",
+        "publish_date": "2024-10-05",
+        "company_contact_email": "safety@orchidaesthetics.example",
+        "company_contact_phone": "+1-213-555-0188",
+        "company_state": "CA",
+        "company_country": "US",
+    },
+    {
+        "primary_di": "00444988000101",
+        "udi_di": "00444988000101",
+        "device_description": "Syringe kit for dermal filler, sterile",
+        "device_class": "II",
+        "manufacturer_name": "Orchid Aesthetics Corp.",
+        "brand_name": "OrchiFill Kit",
+        "product_code": "FMF",
+        "gmdn_term": "Syringe, single-use",
+        "mri_safety": "Not Applicable",
+        "sterile": True,
+        "single_use": True,
+        "implantable": False,
+        "contains_nrl": True,
+        "version_or_model_number": "OK-10",
+        "catalog_number": "OA-OK10",
+        "record_status": "Published",
+        "publish_date": "2024-10-05",
+        "company_contact_email": "safety@orchidaesthetics.example",
+        "company_contact_phone": "+1-213-555-0188",
+        "company_state": "CA",
+        "company_country": "US",
+    },
+]
+
+DEFAULT_RECALL = [
+    {
+        "recall_number": "Z-0421-2024",
+        "recall_class": "I",
+        "event_date": "2024-04-16",
+        "termination_date": None,
+        "status": "Ongoing",
+        "firm_name": "BlueWave Surgical Co.",
+        "manufacturer_name": "BlueWave Surgical Co.",
+        "product_description": "Surgical stapler StapleWave SW-45 may misfire causing incomplete staple formation.",
+        "product_code": "GAG",
+        "code_info": "Lots 24A01-24A45",
+        "reason_for_recall": "Potential for misfire leading to bleeding and prolonged surgery.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 18500,
+        "country": "US",
+        "state": "IL",
+    },
+    {
+        "recall_number": "Z-0510-2024",
+        "recall_class": "II",
+        "event_date": "2024-05-28",
+        "termination_date": "2024-11-02",
+        "status": "Terminated",
+        "firm_name": "NorthRiver Devices LLC",
+        "manufacturer_name": "NorthRiver Devices LLC",
+        "product_description": "Infusion set FlowPilot Set may leak at connector under high backpressure.",
+        "product_code": "FPA",
+        "code_info": "Lots 23F10-24F07",
+        "reason_for_recall": "Leakage may result in under-infusion.",
+        "distribution_pattern": "US and Canada",
+        "quantity_in_commerce": 42000,
+        "country": "US",
+        "state": "MA",
+    },
+    {
+        "recall_number": "Z-0777-2024",
+        "recall_class": "I",
+        "event_date": "2024-09-03",
+        "termination_date": None,
+        "status": "Ongoing",
+        "firm_name": "Acme MedTech, Inc.",
+        "manufacturer_name": "Acme MedTech, Inc.",
+        "product_description": "PulseSure PS-3000 implantable pulse generator may experience premature battery depletion.",
+        "product_code": "DXY",
+        "code_info": "Serial range PS3K-2401XXXX to PS3K-2406XXXX",
+        "reason_for_recall": "Battery depletion could lead to loss of therapy.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 3200,
+        "country": "US",
+        "state": "MD",
+    },
+    {
+        "recall_number": "Z-0103-2025",
+        "recall_class": "II",
+        "event_date": "2025-01-15",
+        "termination_date": None,
+        "status": "Ongoing",
+        "firm_name": "Sunrise Diagnostics Ltd.",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "product_description": "RespiraScan Panel may yield false negative results under specific reagent storage conditions.",
+        "product_code": "OUI",
+        "code_info": "Kits expiring 2025-03 to 2025-06",
+        "reason_for_recall": "False negatives may delay appropriate treatment.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 12000,
+        "country": "US",
+        "state": "WA",
+    },
+    {
+        "recall_number": "Z-0218-2024",
+        "recall_class": "III",
+        "event_date": "2024-02-22",
+        "termination_date": "2024-04-12",
+        "status": "Terminated",
+        "firm_name": "Harbor Mobility Systems",
+        "manufacturer_name": "Harbor Mobility Systems",
+        "product_description": "HarborDrive Battery HB-24 label may list incorrect charging current specification.",
+        "product_code": "KJP",
+        "code_info": "Label revision L-02",
+        "reason_for_recall": "Labeling correction; no reported injuries.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 7800,
+        "country": "US",
+        "state": "OR",
+    },
+    {
+        "recall_number": "Z-0934-2024",
+        "recall_class": "II",
+        "event_date": "2024-12-06",
+        "termination_date": None,
+        "status": "Ongoing",
+        "firm_name": "Orchid Aesthetics Corp.",
+        "manufacturer_name": "Orchid Aesthetics Corp.",
+        "product_description": "OrchiFill Kit syringes may contain natural rubber latex in plunger seal not stated on IFU.",
+        "product_code": "FMF",
+        "code_info": "Lots OK10-24K01 to OK10-24K22",
+        "reason_for_recall": "Potential allergic reactions in latex-sensitive patients.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 9500,
+        "country": "US",
+        "state": "CA",
+    },
+    {
+        "recall_number": "Z-0602-2023",
+        "recall_class": "II",
+        "event_date": "2023-10-11",
+        "termination_date": "2024-01-08",
+        "status": "Terminated",
+        "firm_name": "Sunrise Diagnostics Ltd.",
+        "manufacturer_name": "Sunrise Diagnostics Ltd.",
+        "product_description": "RespiraScan Analyzer RSA-200 may display intermittent error codes due to firmware issue.",
+        "product_code": "OHT",
+        "code_info": "Firmware v1.0.0 to v1.0.2",
+        "reason_for_recall": "Instrument interruptions could delay results reporting.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 640,
+        "country": "US",
+        "state": "WA",
+    },
+    {
+        "recall_number": "Z-0333-2024",
+        "recall_class": "I",
+        "event_date": "2024-03-05",
+        "termination_date": None,
+        "status": "Ongoing",
+        "firm_name": "Acme MedTech, Inc.",
+        "manufacturer_name": "Acme MedTech, Inc.",
+        "product_description": "PulseSure Lead PSL-20 may fracture under repeated flexion.",
+        "product_code": "DTB",
+        "code_info": "Lots PSL20-23H01 to PSL20-24A12",
+        "reason_for_recall": "Lead fracture may result in ineffective pacing.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 8700,
+        "country": "US",
+        "state": "MD",
+    },
+    {
+        "recall_number": "Z-0189-2024",
+        "recall_class": "II",
+        "event_date": "2024-01-30",
+        "termination_date": "2024-07-19",
+        "status": "Terminated",
+        "firm_name": "NorthRiver Devices LLC",
+        "manufacturer_name": "NorthRiver Devices LLC",
+        "product_description": "FlowPilot FP-2 infusion pump battery may discharge faster than expected.",
+        "product_code": "FRN",
+        "code_info": "Batches FP2-BAT-23Q4",
+        "reason_for_recall": "Unexpected shutdown could interrupt infusion.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 5100,
+        "country": "US",
+        "state": "MA",
+    },
+    {
+        "recall_number": "Z-0144-2025",
+        "recall_class": "III",
+        "event_date": "2025-01-06",
+        "termination_date": "2025-01-28",
+        "status": "Terminated",
+        "firm_name": "Harbor Mobility Systems",
+        "manufacturer_name": "Harbor Mobility Systems",
+        "product_description": "HarborDrive HD-8 user manual missing a troubleshooting section in certain print runs.",
+        "product_code": "ITI",
+        "code_info": "Manual rev 1.1",
+        "reason_for_recall": "Documentation correction.",
+        "distribution_pattern": "US Nationwide",
+        "quantity_in_commerce": 2100,
+        "country": "US",
+        "state": "OR",
+    },
+]
 
 
-@dataclass
-class AgentConfig:
-    id: str
-    name: str
-    description: str
-    model: str
-    max_tokens: int
-    temperature: float
-    system_prompt: str
-    provider: str
+# -----------------------------
+# Highlighting (Coral)
+# -----------------------------
+DEFAULT_ONTOLOGY = [
+    "predicate",
+    "warning",
+    "contraindication",
+    "sterile",
+    "biocompatibility",
+    "malfunction",
+    "recall",
+    "mri",
+    "latex",
+    "serious injury",
+    "death",
+    "cybersecurity",
+    "software",
+    "failure",
+    "misfire",
+    "udi",
+    "510(k)",
+    "k-number",
+    "k number",
+    "intended use",
+]
 
 
-@dataclass
-class AppState:
-    language: str = "en"
-    theme_mode: str = "light"
-    current_theme_id: str = PAINTER_THEMES[0]["id"]
-    health: int = 100
-    mana: int = 100
-    experience: int = 0
-    level: int = 1
-    api_keys: Dict[str, Optional[str]] = None
+def coral_highlight(text: str, keywords: Optional[List[str]] = None) -> str:
+    if not text:
+        return ""
+    kws = keywords or DEFAULT_ONTOLOGY
+    kws = sorted(set([k.strip() for k in kws if k and k.strip()]), key=len, reverse=True)
 
+    out = text
 
-# =========================
-# 2. SESSION INIT
-# =========================
+    def repl(m):
+        w = m.group(0)
+        return f'<span class="coral"><b>{w}</b></span>'
 
-def load_agents_yaml(path: str) -> List[AgentConfig]:
-    if not os.path.exists(path):
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    agents = []
-    for a in data.get("agents", []):
-        agents.append(
-            AgentConfig(
-                id=a["id"],
-                name=a["name"],
-                description=a.get("description", ""),
-                model=a["model"],
-                max_tokens=int(a.get("max_tokens", 12000)),
-                temperature=float(a.get("temperature", 0.2)),
-                system_prompt=a.get("system_prompt", ""),
-                provider=a["provider"],
-            )
-        )
-    return agents
-
-
-def init_session_state():
-    if "app_state" not in st.session_state:
-        st.session_state.app_state = AppState(
-            api_keys={
-                "gemini": os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY"),
-                "openai": os.getenv("OPENAI_API_KEY"),
-                "anthropic": os.getenv("ANTHROPIC_API_KEY"),
-                "xai": os.getenv("XAI_API_KEY"),
-            }
-        )
-    if "agents" not in st.session_state:
-        st.session_state.agents = load_agents_yaml("agents.yaml")
-    if "pipeline_results" not in st.session_state:
-        st.session_state.pipeline_results = {}
-    if "pipeline_inputs" not in st.session_state:
-        st.session_state.pipeline_inputs = {}
-    if "pipeline_view_modes" not in st.session_state:
-        st.session_state.pipeline_view_modes = {}
-    if "execution_log" not in st.session_state:
-        st.session_state.execution_log = []
-    if "metrics" not in st.session_state:
-        st.session_state.metrics = {
-            "total_runs": 0,
-            "provider_calls": {"gemini": 0, "openai": 0, "anthropic": 0, "xai": 0},
-            "tokens_used": 0,
-            "last_run_duration": 0.0,
-        }
-    if "agent_status" not in st.session_state:
-        st.session_state.agent_status = {a.id: "idle" for a in st.session_state.agents}
-    if "ocr_text" not in st.session_state:
-        st.session_state.ocr_text = ""
-    if "note_content" not in st.session_state:
-        st.session_state.note_content = ""
-
-
-# =========================
-# 3. THEME & STYLING
-# =========================
-
-def get_current_theme() -> Dict[str, str]:
-    theme_id = st.session_state.app_state.current_theme_id
-    for theme in PAINTER_THEMES:
-        if theme["id"] == theme_id:
-            return theme
-    return PAINTER_THEMES[0]
-
-
-def inject_global_css():
-    theme = get_current_theme()
-    mode = st.session_state.app_state.theme_mode
-
-    bg_color = theme["bg"] if mode == "light" else "#05080F"
-    text_color = "#0B1725" if mode == "light" else "#ECF0F1"
-
-    css = f"""
-    <style>
-    :root {{
-        --primary: {theme["primary"]};
-        --secondary: {theme["secondary"]};
-        --accent: {theme["accent"]};
-        --bg-color: {bg_color};
-        --text-color: {text_color};
-        --coral: {CORAL_COLOR};
-    }}
-    body {{
-        background: radial-gradient(circle at top, var(--bg-color) 0%, #02040f 100%);
-        color: var(--text-color);
-    }}
-    .nordic-card {{
-        background: rgba(255, 255, 255, 0.06);
-        border-radius: 16px;
-        padding: 1.0rem 1.2rem;
-        border: 1px solid rgba(255,255,255,0.12);
-        backdrop-filter: blur(18px);
-    }}
-    .nordic-badge {{
-        border-radius: 999px;
-        padding: 0.1rem 0.8rem;
-        font-size: 0.7rem;
-        border: 1px solid rgba(255,255,255,0.3);
-    }}
-    .mana-orb {{
-        width: 80px;
-        height: 80px;
-        border-radius: 50%;
-        background: radial-gradient(circle at 30% 30%, #ffffff, var(--accent));
-        box-shadow: 0 0 25px rgba(130, 224, 170, 0.8);
-        position: relative;
-    }}
-    .mana-orb-inner {{
-        position: absolute;
-        inset: 10px;
-        border-radius: 50%;
-        background: radial-gradient(circle at 20% 20%, rgba(255,255,255,0.8), transparent);
-        animation: pulse 2s infinite;
-    }}
-    @keyframes pulse {{
-        0% {{ box-shadow: 0 0 0 0 rgba(130,224,170,0.6); }}
-        70% {{ box-shadow: 0 0 0 18px rgba(130,224,170,0); }}
-        100% {{ box-shadow: 0 0 0 0 rgba(130,224,170,0); }}
-    }}
-    .status-dot {{
-        height: 10px;
-        width: 10px;
-        border-radius: 50%;
-        display: inline-block;
-        margin-right: 4px;
-    }}
-    .status-dot-idle {{ background: #95A5A6; }}
-    .status-dot-running {{ background: #F4D03F; animation: blink 1s infinite; }}
-    .status-dot-success {{ background: #2ECC71; }}
-    .status-dot-error {{ background: #E74C3C; }}
-    @keyframes blink {{
-        0% {{ opacity: 0.2; }}
-        50% {{ opacity: 1; }}
-        100% {{ opacity: 0.2; }}
-    }}
-    .coral-text {{
-        color: {CORAL_COLOR};
-        font-weight: 600;
-    }}
-    </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
-
-
-# =========================
-# 4. API KEY HANDLING
-# =========================
-
-def get_api_key(provider: str) -> Optional[str]:
-    # Prefer environment (do not show), fallback to session/UI field
-    key_env = None
-    if provider == "gemini":
-        key_env = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY")
-    elif provider == "openai":
-        key_env = os.getenv("OPENAI_API_KEY")
-    elif provider == "anthropic":
-        key_env = os.getenv("ANTHROPIC_API_KEY")
-    elif provider == "xai":
-        key_env = os.getenv("XAI_API_KEY")
-
-    if key_env:
-        st.session_state.app_state.api_keys[provider] = key_env
-        return key_env
-
-    return st.session_state.app_state.api_keys.get(provider)
-
-
-def api_key_input_ui():
-    st.subheader("🔐 API Keys (Client-Side Only)")
-    st.caption(
-        "Keys stay in memory only. In production on Hugging Face Spaces, prefer environment variables."
-    )
-
-    cols = st.columns(4)
-    providers = ["gemini", "openai", "anthropic", "xai"]
-    labels = ["Google Gemini", "OpenAI", "Anthropic", "Grok (xAI)"]
-    for col, provider, label in zip(cols, providers, labels):
-        with col:
-            env_present = get_api_key(provider) is not None
-            if env_present:
-                st.success(f"{label}: using env var")
-            else:
-                val = st.text_input(
-                    f"{label} API Key",
-                    type="password",
-                    key=f"{provider}_manual_api_key",
-                )
-                if val:
-                    st.session_state.app_state.api_keys[provider] = val
-
-
-# =========================
-# 5. PROVIDER CALLS
-# =========================
-
-def call_gemini(model: str, system_prompt: str, user_input: str,
-                max_tokens: int, temperature: float, api_key: str) -> str:
-    genai.configure(api_key=api_key)
-    model_client = genai.GenerativeModel(
-        model_name=model,
-        system_instruction=(system_prompt or BASE_SYSTEM_PROMPT or None),
-    )
-
-    try:
-        response = model_client.generate_content(
-            [user_input],
-            generation_config={
-                "temperature": float(temperature),
-                "max_output_tokens": int(max_tokens),
-            },
-        )
-    except Exception as e:
-        msg = str(e)
-        upper_msg = msg.upper()
-        if "SAFETY" in upper_msg or "HARM_" in upper_msg or "HARM CATEGORY" in upper_msg:
-            return (
-                "⚠️ Gemini 已封鎖此輸入，原因與其內建安全機制相關。\n"
-                "建議：\n"
-                "- 嘗試稍微調整描述方式，避免過於敏感或模糊的語句；或\n"
-                "- 在此情境下可改用 OpenAI / Anthropic / Grok 等其他模型執行相同步驟。"
-            )
-        return f"⚠️ Gemini 呼叫失敗：{msg}"
-
-    try:
-        return response.text
-    except Exception:
-        if hasattr(response, "candidates") and response.candidates:
-            parts = response.candidates[0].content.parts
-            txt = "".join(
-                getattr(p, "text", "") for p in parts
-                if hasattr(p, "text")
-            )
-            if txt.strip():
-                return txt
-        return "⚠️ 無法從 Gemini 回應中解析文字內容。"
-
-
-def call_openai(model: str, system_prompt: str, user_input: str,
-                max_tokens: int, temperature: float, api_key: str) -> str:
-    client = OpenAI(api_key=api_key)
-    messages = []
-    if BASE_SYSTEM_PROMPT or system_prompt:
-        messages.append({"role": "system", "content": (BASE_SYSTEM_PROMPT + "\n\n" + system_prompt)})
-    else:
-        messages.append({"role": "system", "content": "You are a helpful regulatory assistant."})
-    messages.append({"role": "user", "content": user_input})
-
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    return resp.choices[0].message.content
-
-
-def call_anthropic(model: str, system_prompt: str, user_input: str,
-                   max_tokens: int, temperature: float, api_key: str) -> str:
-    client = anthropic.Anthropic(api_key=api_key)
-    m = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system=(BASE_SYSTEM_PROMPT + "\n\n" + system_prompt) if system_prompt else BASE_SYSTEM_PROMPT,
-        messages=[
-            {"role": "user", "content": user_input},
-        ],
-    )
-    return "".join(block.text for block in m.content if hasattr(block, "text"))
-
-
-def call_xai(model: str, system_prompt: str, user_input: str,
-             max_tokens: int, temperature: float, api_key: str) -> str:
-    client = XAIClient(api_key=api_key, timeout=3600)
-    chat = client.chat.create(model=model)
-    sys_text = (BASE_SYSTEM_PROMPT + "\n\n" + system_prompt) if system_prompt else BASE_SYSTEM_PROMPT
-    chat.append(xai_system(sys_text or "You are Grok, a highly intelligent, helpful AI assistant."))
-    chat.append(xai_user(user_input))
-    response = chat.sample(
-        max_output_tokens=max_tokens,
-        temperature=temperature,
-    )
-    return response.content
-
-
-def run_agent(agent: AgentConfig, input_text: str) -> str:
-    provider = agent.provider
-    api_key = get_api_key(provider)
-    if not api_key:
-        raise RuntimeError(f"No API key configured for provider '{provider}'")
-
-    system_prompt = agent.system_prompt or ""
-    model = agent.model
-    t0 = time.time()
-
-    st.session_state.agent_status[agent.id] = "running"
-
-    if provider == "gemini":
-        out = call_gemini(model, system_prompt, input_text, agent.max_tokens, agent.temperature, api_key)
-    elif provider == "openai":
-        out = call_openai(model, system_prompt, input_text, agent.max_tokens, agent.temperature, api_key)
-    elif provider == "anthropic":
-        out = call_anthropic(model, system_prompt, input_text, agent.max_tokens, agent.temperature, api_key)
-    elif provider == "xai":
-        out = call_xai(model, system_prompt, input_text, agent.max_tokens, agent.temperature, api_key)
-    else:
-        st.session_state.agent_status[agent.id] = "error"
-        raise ValueError(f"Unsupported provider: {provider}")
-
-    duration = time.time() - t0
-    st.session_state.metrics["provider_calls"][provider] += 1
-    st.session_state.metrics["total_runs"] += 1
-    st.session_state.metrics["last_run_duration"] = duration
-
-    st.session_state.app_state.mana = max(0, st.session_state.app_state.mana - 20)
-    st.session_state.app_state.experience += 10
-    st.session_state.app_state.level = 1 + st.session_state.app_state.experience // 100
-
-    st.session_state.agent_status[agent.id] = "success"
+    for k in kws:
+        # word-ish boundaries but allow "(k)" and punctuation
+        pattern = re.compile(rf"(?i)({re.escape(k)})")
+        out = pattern.sub(repl, out)
     return out
 
 
-def run_ad_hoc_llm(provider: str, model: str, system_prompt: str, user_prompt: str,
-                   max_tokens: int, temperature: float) -> str:
-    dummy = AgentConfig(
-        id="adhoc",
-        name="AdHoc",
-        description="",
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system_prompt=system_prompt,
-        provider=provider,
-    )
-    # For ad-hoc, don’t use agent_status
-    return run_agent(dummy, user_prompt)
+# -----------------------------
+# Search engine
+# -----------------------------
+@dataclass
+class SearchResult:
+    dataset: str
+    score: int
+    record: Dict[str, Any]
 
 
-# =========================
-# 6. GAMIFIED STATUS / WOW FEATURES
-# =========================
+class RegulatorySearchEngine:
+    def __init__(self, df_510k: pd.DataFrame, df_adr: pd.DataFrame, df_gudid: pd.DataFrame, df_recall: pd.DataFrame):
+        self.df_510k = df_510k
+        self.df_adr = df_adr
+        self.df_gudid = df_gudid
+        self.df_recall = df_recall
 
-def wow_header():
-    theme = get_current_theme()
-    lang = st.session_state.app_state.language
-    name = theme["name_en"] if lang == "en" else theme["name_zh"]
+    def _fuzzy_hits(self, df: pd.DataFrame, cols: List[str], query: str, min_score=75, limit=25):
+        q = (query or "").strip().lower()
+        hits = []
+        if not q:
+            return hits
+        for _, row in df.iterrows():
+            best = 0
+            for c in cols:
+                val = str(row.get(c, "")).lower()
+                if not val:
+                    continue
+                best = max(best, fuzz.partial_ratio(q, val))
+            if best >= min_score:
+                hits.append((best, row.to_dict()))
+        hits.sort(key=lambda x: x[0], reverse=True)
+        return hits[:limit]
+
+    def search_all(self, query: str) -> Dict[str, List[SearchResult]]:
+        results: Dict[str, List[SearchResult]] = {"510k": [], "adr": [], "gudid": [], "recall": []}
+        if not (query or "").strip():
+            return results
+
+        for score, rec in self._fuzzy_hits(
+            self.df_510k,
+            ["k_number", "device_name", "applicant", "manufacturer_name", "product_code", "summary"],
+            query,
+        ):
+            results["510k"].append(SearchResult("510k", score, rec))
+
+        for score, rec in self._fuzzy_hits(
+            self.df_adr,
+            ["adverse_event_id", "brand_name", "manufacturer_name", "product_code", "udi_di", "device_problem", "narrative"],
+            query,
+        ):
+            results["adr"].append(SearchResult("adr", score, rec))
+
+        for score, rec in self._fuzzy_hits(
+            self.df_gudid,
+            ["udi_di", "primary_di", "brand_name", "manufacturer_name", "product_code", "device_description", "gmdn_term"],
+            query,
+        ):
+            results["gudid"].append(SearchResult("gudid", score, rec))
+
+        for score, rec in self._fuzzy_hits(
+            self.df_recall,
+            ["recall_number", "firm_name", "manufacturer_name", "product_code", "reason_for_recall", "product_description"],
+            query,
+        ):
+            results["recall"].append(SearchResult("recall", score, rec))
+
+        # Linkage: if a K-number is found, expand via predicates
+        q_upper = (query or "").strip().upper()
+        top_k = None
+        for r in results["510k"]:
+            if str(r.record.get("k_number", "")).upper() == q_upper:
+                top_k = r.record
+                break
+        if top_k:
+            preds = top_k.get("predicate_k_numbers", []) or []
+            for k in preds:
+                for score, rec in self._fuzzy_hits(self.df_510k, ["k_number", "device_name"], k, min_score=88, limit=10):
+                    results["510k"].append(SearchResult("510k", score, rec))
+
+        return results
+
+    def device_360_view(self, query: str) -> Dict[str, Any]:
+        r = self.search_all(query)
+        top_510k = r["510k"][0].record if r["510k"] else None
+
+        product_code = (top_510k or {}).get("product_code")
+        device_name = (top_510k or {}).get("device_name")
+
+        recalls = []
+        mdrs = []
+        gudid = []
+
+        if product_code:
+            recalls = [x.record for x in r["recall"] if x.record.get("product_code") == product_code]
+            mdrs = [x.record for x in r["adr"] if x.record.get("product_code") == product_code]
+            gudid = [x.record for x in r["gudid"] if x.record.get("product_code") == product_code]
+
+        # Extra fuzzy by device name if product_code absent
+        if not product_code and device_name:
+            recalls = [x.record for x in r["recall"]][:5]
+            mdrs = [x.record for x in r["adr"]][:5]
+            gudid = [x.record for x in r["gudid"]][:5]
+
+        top_recall_class = None
+        if recalls:
+            # Prefer worst class: I > II > III
+            priority = {"I": 3, "II": 2, "III": 1}
+            recalls_sorted = sorted(recalls, key=lambda rr: priority.get(str(rr.get("recall_class", "")).upper(), 0), reverse=True)
+            top_recall_class = recalls_sorted[0].get("recall_class")
+
+        return {
+            "top_510k": top_510k,
+            "recalls": recalls[:8],
+            "mdr_count": len(mdrs),
+            "mdr_examples": mdrs[:6],
+            "gudid_examples": gudid[:6],
+            "top_recall_class": top_recall_class,
+        }
+
+
+# -----------------------------
+# agents.yaml config manager (Pydantic)
+# -----------------------------
+class AgentDef(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    temperature: float = 0.2
+    max_tokens: int = 4000
+    system_prompt: str
+    user_prompt: str = "Analyze the provided content."
+
+
+class AgentsConfig(BaseModel):
+    version: str = "1.0"
+    agents: List[AgentDef] = Field(default_factory=list)
+
+
+def load_and_standardize_agents_yaml(raw_text: str) -> AgentsConfig:
+    data = yaml.safe_load(raw_text) or {}
+
+    # Accept list form
+    if isinstance(data, list):
+        data = {"version": "1.0", "agents": data}
+
+    data.setdefault("version", "1.0")
+    data.setdefault("agents", [])
+
+    fixed = []
+    for a in data["agents"]:
+        if not isinstance(a, dict):
+            continue
+        a.setdefault("provider", "openai")
+        a.setdefault("model", "gpt-4o-mini")
+        a.setdefault("temperature", 0.2)
+        a.setdefault("max_tokens", 4000)
+        a.setdefault("description", "")
+        a.setdefault("user_prompt", "Analyze the provided content.")
+        fixed.append(a)
+
+    data["agents"] = fixed
+    return AgentsConfig.model_validate(data)
+
+
+def dump_agents_yaml(cfg: AgentsConfig) -> str:
+    return yaml.safe_dump(cfg.model_dump(), sort_keys=False, allow_unicode=True)
+
+
+# -----------------------------
+# LLM providers
+# -----------------------------
+OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini"]
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash-lite", "gemini-3-pro-preview"]
+ANTHROPIC_MODELS = ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"]
+XAI_MODELS = ["grok-4-fast-reasoning", "grok-4-1-fast-non-reasoning"]
+
+
+def provider_model_map():
+    return {
+        "openai": OPENAI_MODELS,
+        "gemini": GEMINI_MODELS,
+        "anthropic": ANTHROPIC_MODELS,
+        "xai": XAI_MODELS,
+    }
+
+
+def env_or_session(env_name: str) -> Optional[str]:
+    if os.environ.get(env_name):
+        return os.environ.get(env_name)
+    return st.session_state.get("api_keys", {}).get(env_name)
+
+
+def call_llm_text(
+    provider: str,
+    model: str,
+    api_key: str,
+    system: str,
+    user: str,
+    max_tokens: int = 12000,
+    temperature: float = 0.2,
+) -> str:
+    provider = (provider or "").lower().strip()
+
+    if provider == "openai":
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return resp.output_text or ""
+
+    if provider == "gemini":
+        import google.generativeai as genai
+
+        genai.configure(api_key=api_key)
+        m = genai.GenerativeModel(
+            model_name=model,
+            generation_config={"temperature": temperature, "max_output_tokens": max_tokens},
+        )
+        r = m.generate_content([system, user])
+        return (r.text or "").strip()
+
+    if provider == "anthropic":
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        parts = []
+        for b in msg.content:
+            if getattr(b, "type", "") == "text":
+                parts.append(b.text)
+        return "".join(parts).strip()
+
+    if provider == "xai":
+        # xAI is commonly OpenAI-compatible; adjust base_url if needed
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return resp.output_text or ""
+
+    raise ValueError(f"Unsupported provider: {provider}")
+
+
+def call_vision_ocr(
+    provider: str,
+    model: str,
+    api_key: str,
+    images: List[Image.Image],
+    lang: str,
+    max_tokens: int = 12000,
+) -> str:
+    """
+    Vision OCR: send page images to OpenAI/Gemini to extract text with better tables.
+    Returns combined text with page markers.
+    """
+    provider = (provider or "").lower().strip()
+    sys = "You are an OCR engine for regulatory PDFs. Preserve tables when possible. Output plain text (no markdown)."
+    if lang == "zh-TW":
+        sys = "你是法規 PDF 的 OCR 引擎。盡可能保留表格結構與數值。輸出純文字（不要 Markdown）。"
+
+    prompt = "Extract all readable text from this page. Preserve tables and headings."
+    if lang == "zh-TW":
+        prompt = "請從此頁影像擷取所有可讀文字，盡可能保留表格與標題結構。"
+
+    chunks = []
+    if provider == "openai":
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        for i, img in enumerate(images, start=1):
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            data_url = f"data:image/png;base64,{b64}"
+
+            resp = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": sys},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {"type": "input_image", "image_url": data_url},
+                        ],
+                    },
+                ],
+                max_output_tokens=max_tokens,
+                temperature=0.0,
+            )
+            page_text = (resp.output_text or "").strip()
+            chunks.append(f"\n\n--- PAGE {i} ---\n{page_text}")
+        return "\n".join(chunks).strip()
+
+    if provider == "gemini":
+        import google.generativeai as genai
+
+        genai.configure(api_key=api_key)
+        m = genai.GenerativeModel(model_name=model, generation_config={"temperature": 0.0, "max_output_tokens": max_tokens})
+        for i, img in enumerate(images, start=1):
+            r = m.generate_content([sys + "\n" + prompt, img])
+            page_text = (r.text or "").strip()
+            chunks.append(f"\n\n--- PAGE {i} ---\n{page_text}")
+        return "\n".join(chunks).strip()
+
+    raise ValueError("Vision OCR only supported for provider=openai or gemini in this build.")
+
+
+# -----------------------------
+# PDF tools
+# -----------------------------
+def parse_page_ranges(ranges_str: str) -> List[Tuple[int, int]]:
+    """
+    Accept: "1-5, 10, 12-14"
+    Returns list of (start,end) inclusive 1-based.
+    """
+    ranges_str = (ranges_str or "").strip()
+    if not ranges_str:
+        return []
+    out = []
+    parts = [p.strip() for p in ranges_str.split(",") if p.strip()]
+    for p in parts:
+        if "-" in p:
+            a, b = p.split("-", 1)
+            a = int(a.strip())
+            b = int(b.strip())
+            if a > b:
+                a, b = b, a
+            out.append((a, b))
+        else:
+            n = int(p)
+            out.append((n, n))
+    return out
+
+
+def trim_pdf_bytes(pdf_bytes: bytes, page_ranges: List[Tuple[int, int]]) -> bytes:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    n = len(reader.pages)
+
+    for (s, e) in page_ranges:
+        s = max(1, s)
+        e = min(n, e)
+        for i in range(s - 1, e):
+            writer.add_page(reader.pages[i])
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def extract_text_pypdf2(pdf_bytes: bytes) -> str:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    chunks = []
+    for p in reader.pages:
+        chunks.append(p.extract_text() or "")
+    return "\n\n".join(chunks).strip()
+
+
+def render_pdf_iframe(pdf_bytes: bytes, height: int = 520) -> str:
+    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    return f"""
+    <iframe
+        src="data:application/pdf;base64,{b64}"
+        width="100%"
+        height="{height}"
+        style="border: 1px solid var(--border); border-radius: 14px; background: white;"
+        type="application/pdf">
+    </iframe>
+    """
+
+
+# -----------------------------
+# AI Note Keeper
+# -----------------------------
+MAGICS = [
+    "Organize Note (Markdown)",
+    "Executive Summary",
+    "Action Items + Owners",
+    "Risk/Deficiency Finder",
+    "Compliance Checklist Generator",
+    "AI Keywords Highlighter",
+]
+
+
+def magic_run(magic_name: str, provider: str, model: str, api_key: str, raw_note: str, lang: str, max_tokens: int = 6000) -> str:
+    if lang == "zh-TW":
+        system = (
+            "你是資深法規與技術編輯助理。請回傳乾淨、結構化的 Markdown。"
+            "內容需保守、不可捏造，缺資料請用 Gap 標示。"
+        )
+    else:
+        system = (
+            "You are an expert regulatory assistant and technical editor. Return clean, structured Markdown. "
+            "Be conservative; do not fabricate. Mark missing info as Gap."
+        )
+
+    if magic_name == "Organize Note (Markdown)":
+        user = (
+            f"請把以下筆記整理成結構化 Markdown（含標題、重點、待辦、風險/缺口、關鍵詞）：\n\n{raw_note}"
+            if lang == "zh-TW"
+            else f"Organize the following note into structured Markdown with headings, bullets, action items, gaps, and keywords:\n\n{raw_note}"
+        )
+        return call_llm_text(provider, model, api_key, system, user, max_tokens=max_tokens, temperature=0.2)
+
+    if magic_name == "Executive Summary":
+        user = (
+            f"請產出一段高密度的主管摘要（Markdown，3~7 點重點）：\n\n{raw_note}"
+            if lang == "zh-TW"
+            else f"Create an executive summary (Markdown) with 3-7 key points:\n\n{raw_note}"
+        )
+        return call_llm_text(provider, model, api_key, system, user, max_tokens=max_tokens, temperature=0.2)
+
+    if magic_name == "Action Items + Owners":
+        user = (
+            f"請從筆記抽取可執行待辦事項，輸出 Markdown 表格：Action、Owner(建議)、Due date(建議)、Rationale。\n\n{raw_note}"
+            if lang == "zh-TW"
+            else f"Extract action items. Output a Markdown table: Action, Owner (suggested), Due date (suggested), Rationale.\n\n{raw_note}"
+        )
+        return call_llm_text(provider, model, api_key, system, user, max_tokens=max_tokens, temperature=0.2)
+
+    if magic_name == "Risk/Deficiency Finder":
+        user = (
+            f"請找出法規風險/缺失點，並以 [High/Med/Low] 分級；每點需包含證據摘錄（引用原文）。\n\n{raw_note}"
+            if lang == "zh-TW"
+            else f"Identify regulatory risks/deficiencies with [High/Med/Low] severity and evidence quotes.\n\n{raw_note}"
+        )
+        return call_llm_text(provider, model, api_key, system, user, max_tokens=max_tokens, temperature=0.2)
+
+    if magic_name == "Compliance Checklist Generator":
+        user = (
+            f"請依常見 510(k) 審查主題產出合規核對清單（Markdown checkbox），如：biocompatibility、sterility、labeling、cybersecurity、software V&V。\n\n{raw_note}"
+            if lang == "zh-TW"
+            else f"Generate a compliance checklist (Markdown checkboxes) for common 510(k) topics.\n\n{raw_note}"
+        )
+        return call_llm_text(provider, model, api_key, system, user, max_tokens=max_tokens, temperature=0.2)
+
+    raise ValueError("AI Keywords Highlighter handled in UI.")
+
+
+def apply_keyword_colors(html_or_text: str, keyword_color_pairs: List[Tuple[str, str]]) -> str:
+    out = coral_highlight(html_or_text)
+    for kw, color in keyword_color_pairs:
+        if not kw.strip():
+            continue
+        # Simple literal replacement; user can provide exact phrase. (Can be upgraded to regex later.)
+        out = out.replace(
+            kw,
+            f'<span style="color:{color}; font-weight:900; text-shadow:0 0 18px rgba(255,255,255,0.08)">{kw}</span>',
+        )
+    return out
+
+
+# -----------------------------
+# Streamlit app state
+# -----------------------------
+st.set_page_config(page_title="510(k) Review Studio", layout="wide")
+
+
+def ss_init():
+    st.session_state.setdefault("theme", "dark")
+    st.session_state.setdefault("lang", "en")
+    st.session_state.setdefault("style", PAINTER_STYLES[0])
+
+    st.session_state.setdefault("api_keys", {})  # stored in session only
+
+    st.session_state.setdefault("global_query", "")
+
+    st.session_state.setdefault("pdf_bytes", None)
+    st.session_state.setdefault("trimmed_pdf_bytes", None)
+
+    st.session_state.setdefault("raw_text", "")
+    st.session_state.setdefault("ocr_text", "")
+
+    st.session_state.setdefault("agents_yaml_text", "")
+    st.session_state.setdefault("skill_md", "")
+
+    st.session_state.setdefault("agent_outputs", [])  # list of runs
+
+    st.session_state.setdefault("final_report", "")
+
+    st.session_state.setdefault("note_raw", "")
+    st.session_state.setdefault("note_md", "")
+    st.session_state.setdefault("note_render_html", "")
+
+    st.session_state.setdefault("keyword_pairs", [("", "#FF7F50"), ("", "#00B3B3"), ("", "#F4D03F")])
+
+
+ss_init()
+
+
+def load_text_file(path: str, default: str) -> str:
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+    except Exception:
+        pass
+    return default
+
+
+if not st.session_state["agents_yaml_text"]:
+    st.session_state["agents_yaml_text"] = load_text_file("agents.yaml", "version: '1.0'\nagents: []\n")
+if not st.session_state["skill_md"]:
+    st.session_state["skill_md"] = load_text_file("SKILL.md", "# SKILL\n\n")
+
+
+lang = st.session_state["lang"]
+theme = st.session_state["theme"]
+style = st.session_state["style"]
+
+st.markdown(inject_css(theme, style["accent"]), unsafe_allow_html=True)
+
+# DataFrames
+df_510k = pd.DataFrame(DEFAULT_510K)
+df_adr = pd.DataFrame(DEFAULT_ADR)
+df_gudid = pd.DataFrame(DEFAULT_GUDID)
+df_recall = pd.DataFrame(DEFAULT_RECALL)
+engine = RegulatorySearchEngine(df_510k, df_adr, df_gudid, df_recall)
+
+
+# -----------------------------
+# Top bar (WOW)
+# -----------------------------
+def key_status_chip(label: str, env_name: str) -> str:
+    if os.environ.get(env_name):
+        dot = "var(--ok)"
+        status = t(lang, "managed_by_system")
+    elif st.session_state["api_keys"].get(env_name):
+        dot = "var(--warn)"
+        status = "Session"
+    else:
+        dot = "var(--bad)"
+        status = t(lang, "missing_key")
+    return f"<span class='chip'><span class='dot' style='background:{dot}'></span>{label}: {status}</span>"
+
+
+top = st.container()
+with top:
+    c1, c2, c3 = st.columns([2.2, 3.0, 1.2], vertical_alignment="center")
+
+    with c1:
+        st.markdown(
+            f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'app_title')}</h3></div>",
+            unsafe_allow_html=True,
+        )
+
+    with c2:
+        chips = ""
+        chips += key_status_chip("OpenAI", "OPENAI_API_KEY")
+        chips += key_status_chip("Gemini", "GEMINI_API_KEY")
+        chips += key_status_chip("Anthropic", "ANTHROPIC_API_KEY")
+        chips += key_status_chip("xAI", "XAI_API_KEY")
+
+        dataset_chip = (
+            f"<span class='chip'><span class='dot'></span>"
+            f"510k:{len(df_510k)} ADR:{len(df_adr)} GUDID:{len(df_gudid)} Recall:{len(df_recall)}</span>"
+        )
+
+        ocr_chip = (
+            f"<span class='chip'><span class='dot' style='background:var(--ok)'></span>{t(lang,'ocr')}: {t(lang,'loaded')}</span>"
+            if st.session_state["ocr_text"].strip()
+            else f"<span class='chip'><span class='dot' style='background:var(--warn)'></span>{t(lang,'ocr')}: {t(lang,'empty')}</span>"
+        )
+
+        st.markdown(f"<div class='wow-card'>{chips}{dataset_chip}{ocr_chip}</div>", unsafe_allow_html=True)
+
+        # Gamified bar: "mana" = number of agent runs (mod)
+        mana = (len(st.session_state["agent_outputs"]) % 10) / 10.0
+        st.progress(mana, text="Review Mana (agent runs)")
+
+    with c3:
+        with st.popover(t(lang, "settings")):
+            st.session_state["theme"] = st.radio(t(lang, "theme"), ["dark", "light"], index=0 if theme == "dark" else 1)
+            st.session_state["lang"] = st.radio(t(lang, "language"), ["en", "zh-TW"], index=0 if lang == "en" else 1)
+
+            style_names = [s["name"] for s in PAINTER_STYLES]
+            curr = st.session_state["style"]["name"]
+            ix = style_names.index(curr) if curr in style_names else 0
+            pick = st.selectbox(t(lang, "style"), style_names, index=ix)
+            st.session_state["style"] = next(s for s in PAINTER_STYLES if s["name"] == pick)
+
+            if st.button(t(lang, "jackpot"), use_container_width=True):
+                st.session_state["style"] = jackpot_style()
+                st.rerun()
+
+# refresh
+lang = st.session_state["lang"]
+theme = st.session_state["theme"]
+style = st.session_state["style"]
+st.markdown(inject_css(theme, style["accent"]), unsafe_allow_html=True)
+
+# Floating WOW button (visual)
+st.markdown(f"<div class='fab'>RUN</div><div class='fab-sub'>{t(lang,'fab_hint')}</div>", unsafe_allow_html=True)
+
+
+# -----------------------------
+# Sidebar (Library + API keys + config)
+# -----------------------------
+with st.sidebar:
+    st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'library')}</h4></div>", unsafe_allow_html=True)
+    st.caption(t(lang, "api_keys"))
+
+    # API keys: only show inputs if env var missing; never display env key.
+    key_specs = [
+        ("OpenAI", "OPENAI_API_KEY"),
+        ("Gemini", "GEMINI_API_KEY"),
+        ("Anthropic", "ANTHROPIC_API_KEY"),
+        ("xAI", "XAI_API_KEY"),
+    ]
+    for label, env_name in key_specs:
+        if os.environ.get(env_name):
+            st.markdown(
+                f"<div class='wow-mini'><b>{label}</b><br/><span class='chip'>{t(lang,'managed_by_system')}</span></div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            v = st.text_input(f"{label} key", type="password", value=st.session_state["api_keys"].get(env_name, ""))
+            if v:
+                st.session_state["api_keys"][env_name] = v
+
+    st.divider()
+
+    st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'agents')}</h4></div>", unsafe_allow_html=True)
+    up = st.file_uploader(f"{t(lang,'upload')} agents.yaml", type=["yaml", "yml"])
+    if up:
+        st.session_state["agents_yaml_text"] = up.read().decode("utf-8", errors="ignore")
+    st.session_state["agents_yaml_text"] = st.text_area("agents.yaml", st.session_state["agents_yaml_text"], height=220)
+
+    agents_cfg = None
+    try:
+        agents_cfg = load_and_standardize_agents_yaml(st.session_state["agents_yaml_text"])
+        st.success(t(lang, "standardized_loaded"))
+        st.download_button(f"{t(lang,'download')} agents.yaml", dump_agents_yaml(agents_cfg), file_name="agents.yaml")
+    except Exception as e:
+        st.error(f"{t(lang,'invalid_agents')}: {e}")
+
+    st.divider()
+
+    st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'skills')}</h4></div>", unsafe_allow_html=True)
+    st.session_state["skill_md"] = st.text_area("SKILL.md", st.session_state["skill_md"], height=220)
+    st.download_button(f"{t(lang,'download')} SKILL.md", st.session_state["skill_md"], file_name="SKILL.md")
+
+    st.divider()
+    st.markdown(f"<div class='wow-mini'><b>{t(lang,'danger_zone')}</b></div>", unsafe_allow_html=True)
+    if st.button(t(lang, "clear_session"), use_container_width=True):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
+
+
+# -----------------------------
+# Global search + mode
+# -----------------------------
+qcol1, qcol2 = st.columns([2.4, 1.2], vertical_alignment="center")
+with qcol1:
+    st.session_state["global_query"] = st.text_input(t(lang, "global_search"), value=st.session_state["global_query"])
+with qcol2:
+    view_mode = st.selectbox(t(lang, "mode"), [t(lang, "command_center"), t(lang, "note_keeper")], index=0)
+
+query = st.session_state["global_query"].strip()
+d360 = engine.device_360_view(query) if query else None
+
+# Dashboard (always visible area)
+st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'dashboard')}</h4></div>", unsafe_allow_html=True)
+k1, k2, k3, k4 = st.columns(4)
+with k1:
+    top_k = (d360 or {}).get("top_510k") or {}
     st.markdown(
-        f"""
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
-          <div>
-            <h1 style="margin-bottom:0.2rem;">FDA 510(k) Review Studio · Painter Edition</h1>
-            <div style="font-size:0.85rem;opacity:0.85;">
-              Agentic Regulatory Workspace · {name}
-            </div>
-          </div>
-          <div style="text-align:right;font-size:0.8rem;opacity:0.85;">
-            <span class="nordic-badge">510(k) · Agentic AI</span>
-            <span class="nordic-badge">WOW UI</span>
-          </div>
-        </div>
-        """,
+        f"<div class='wow-mini'><b>K#</b><br/>{top_k.get('k_number','—')}</div>",
+        unsafe_allow_html=True,
+    )
+with k2:
+    st.markdown(
+        f"<div class='wow-mini'><b>Decision</b><br/>{top_k.get('decision','—')}</div>",
+        unsafe_allow_html=True,
+    )
+with k3:
+    mdr_count = (d360 or {}).get("mdr_count", 0) if d360 else 0
+    st.markdown(
+        f"<div class='wow-mini'><b>{t(lang,'mdr_count')}</b><br/>{mdr_count}</div>",
+        unsafe_allow_html=True,
+    )
+with k4:
+    rc = (d360 or {}).get("top_recall_class") if d360 else None
+    rc_html = f"<span class='coral'>{rc}</span>" if rc else "—"
+    st.markdown(
+        f"<div class='wow-mini'><b>{t(lang,'recall_class')}</b><br/>{rc_html}</div>",
         unsafe_allow_html=True,
     )
 
 
-def wow_status_bar():
-    app = st.session_state.app_state
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
+# -----------------------------
+# Command Center
+# -----------------------------
+if view_mode == t(lang, "note_keeper"):
+    st.markdown(f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'note_keeper')}</h3></div>", unsafe_allow_html=True)
 
-    with col1:
-        st.markdown("**Health**")
-        st.progress(app.health / 100)
-    with col2:
-        st.markdown("**Mana**")
-        st.progress(app.mana / 100)
-    with col3:
-        st.metric("Level", app.level, help="Level based on cumulative XP")
-        st.caption(f"XP: {app.experience}")
-    with col4:
-        st.markdown(
-            """
-            <div style="display:flex;align-items:center;gap:1rem;">
-              <div class="mana-orb">
-                <div class="mana-orb-inner"></div>
-              </div>
-              <div style="flex:1;">
-                <div style="font-size:0.8rem;opacity:0.9;">Regulatory Stress Meter</div>
-            """,
-            unsafe_allow_html=True,
-        )
-        stress = max(0, 100 - app.health)
-        st.progress(stress / 100, text=f"Stress: {stress}%")
-        st.markdown("</div></div>", unsafe_allow_html=True)
+    left, right = st.columns([1.15, 1.0], gap="large")
 
-    unlocked = []
-    if app.experience >= 50:
-        unlocked.append("🌸 First Bloom Reviewer (50+ XP)")
-    if app.experience >= 200:
-        unlocked.append("🌺 Seasoned 510(k) Reviewer (200+ XP)")
-    if st.session_state.metrics["total_runs"] >= 10:
-        unlocked.append("🌷 Ten Runs of Tranquility (10+ AI calls)")
+    with left:
+        st.markdown(f"<div class='wow-mini'><b>{t(lang,'paste_note')}</b></div>", unsafe_allow_html=True)
+        st.session_state["note_raw"] = st.text_area("", st.session_state["note_raw"], height=220)
 
-    if unlocked:
-        st.markdown(
-            "<div class='nordic-card'><strong>Achievement Blossoms</strong><br>" +
-            "<br>".join(unlocked) +
-            "</div>",
-            unsafe_allow_html=True,
-        )
-
-
-def style_jackpot():
-    if st.button("🎰 Style Jackpot"):
-        theme = random.choice(PAINTER_THEMES)
-        st.session_state.app_state.current_theme_id = theme["id"]
-        st.toast(f"Theme changed to {theme['name_en']} / {theme['name_zh']}")
-
-
-def render_agent_status_bar():
-    if not st.session_state.agents:
-        return
-    st.markdown("##### 🔄 Agent Status")
-    cols = st.columns(len(st.session_state.agents))
-    for col, agent in zip(cols, st.session_state.agents):
-        status = st.session_state.agent_status.get(agent.id, "idle")
-        with col:
-            st.markdown(
-                f"""
-                <div style="font-size:0.8rem;">
-                  <span class="status-dot status-dot-{status}"></span>
-                  <strong>{agent.name}</strong><br>
-                  <span style="opacity:0.7;font-size:0.7rem;">{status}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-
-# =========================
-# 7. PDF UTILITIES
-# =========================
-
-def render_pdf_viewer(uploaded_file):
-    if not uploaded_file:
-        return
-    b64 = base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
-    pdf_display = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf"></iframe>'
-    st.markdown(pdf_display, unsafe_allow_html=True)
-
-
-def extract_pdf_pages_text(uploaded_file, selected_pages: List[int]) -> str:
-    if not uploaded_file:
-        return ""
-    reader = PdfReader(uploaded_file)
-    texts = []
-    for p in selected_pages:
-        if 0 <= p < len(reader.pages):
-            try:
-                page_text = reader.pages[p].extract_text() or ""
-            except Exception:
-                page_text = ""
-            texts.append(f"\n\n--- Page {p+1} ---\n{page_text}")
-    return "\n".join(texts)
-
-
-# =========================
-# 8. PIPELINE UI (ORIGINAL FEATURE, IMPROVED)
-# =========================
-
-def pipeline_tab():
-    st.subheader("🔗 Multi-Agent 510(k) Review Pipeline")
-
-    agents = st.session_state.agents
-    if not agents:
-        st.error("No agents loaded from agents.yaml")
-        return
-
-    render_agent_status_bar()
-
-    global_input = st.text_area(
-        "Global Case Input (e.g. device description, indications, test summaries)",
-        height=180,
-        key="pipeline_global_input",
-    )
-
-    st.caption("You can run agents one-by-one, or chain them using **Run Full Pipeline**.")
-    run_all = st.button("🚀 Run Full Pipeline (sequential chaining)", type="primary")
-
-    if run_all:
-        if st.session_state.app_state.mana < 20:
-            st.error("Not enough Mana to start the pipeline (need at least 20).")
-            return
-
-        st.session_state.execution_log.append(
-            {
-                "time": time.strftime("%H:%M:%S"),
-                "type": "info",
-                "msg": "Full pipeline execution started.",
-            }
-        )
-
-        for idx, a in enumerate(agents):
-            provider_key = f"provider_{a.id}"
-            model_key = f"model_{a.id}"
-            temp_key = f"temp_{a.id}"
-            max_tokens_key = f"max_tokens_{a.id}"
-            sys_key = f"system_prompt_{a.id}"
-
-            if provider_key in st.session_state:
-                a.provider = st.session_state[provider_key]
-            if model_key in st.session_state:
-                a.model = st.session_state[model_key]
-            if temp_key in st.session_state:
-                a.temperature = float(st.session_state[temp_key])
-            if max_tokens_key in st.session_state:
-                a.max_tokens = int(st.session_state[max_tokens_key])
-            if sys_key in st.session_state:
-                a.system_prompt = st.session_state[sys_key]
-
-            if idx == 0:
-                step_input = global_input or ""
+        upl = st.file_uploader(t(lang, "upload_note"), type=["pdf", "txt", "md"])
+        if upl:
+            b = upl.read()
+            name = upl.name.lower()
+            if name.endswith(".pdf"):
+                # Fast path: text extract; user can use OCR in Command Center if needed.
+                st.session_state["note_raw"] = extract_text_pypdf2(b)
             else:
-                prev_agent = agents[idx - 1]
-                prev_id = prev_agent.id
-                prev_output_key = f"output_{prev_id}"
-                if prev_output_key in st.session_state and str(st.session_state[prev_output_key]).strip():
-                    step_input = st.session_state[prev_output_key]
+                st.session_state["note_raw"] = b.decode("utf-8", errors="ignore")
+
+        st.markdown(f"<div class='wow-mini'><b>{t(lang,'ai_magics')}</b></div>", unsafe_allow_html=True)
+        pmap = provider_model_map()
+        provider = st.selectbox(t(lang, "provider"), list(pmap.keys()), index=0)
+        model = st.selectbox(t(lang, "model"), pmap[provider], index=0)
+        max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=6000, step=256)
+
+        magic = st.selectbox("Magic", MAGICS, index=0)
+
+        if magic != "AI Keywords Highlighter":
+            if st.button(t(lang, "run_magic"), use_container_width=True):
+                env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "xai": "XAI_API_KEY"}[
+                    provider
+                ]
+                api_key = env_or_session(env_name)
+                if not api_key:
+                    st.error(f"{env_name} missing.")
                 else:
-                    step_input = st.session_state.pipeline_results.get(prev_id, "")
+                    out = magic_run(magic, provider, model, api_key, st.session_state["note_raw"], lang=lang, max_tokens=int(max_tokens))
+                    st.session_state["note_md"] = out
+                    # Default render: coral highlight ontology
+                    st.session_state["note_render_html"] = coral_highlight(out)
+        else:
+            st.caption(t(lang, "keyword_colors"))
 
-            st.session_state.agent_status[a.id] = "running"
-            with st.spinner(f"Running Agent {idx+1}: {a.name}…"):
-                try:
-                    result = run_agent(a, step_input or "")
-                    st.session_state.pipeline_results[a.id] = result
-                    st.session_state[f"output_{a.id}"] = result
-                    st.session_state.execution_log.append(
-                        {
-                            "time": time.strftime("%H:%M:%S"),
-                            "type": "success",
-                            "msg": f"Agent {idx+1} ({a.name}) completed (full pipeline).",
-                        }
-                    )
-                except Exception as e:
-                    st.session_state.agent_status[a.id] = "error"
-                    st.session_state.execution_log.append(
-                        {
-                            "time": time.strftime("%H:%M:%S"),
-                            "type": "error",
-                            "msg": f"Agent {idx+1} ({a.name}) failed during full pipeline: {e}",
-                        }
-                    )
-                    st.error(f"Agent {a.name} failed: {e}")
-                    break
+            # 3 default pairs + expandable
+            pairs = st.session_state["keyword_pairs"]
+            for i in range(len(pairs)):
+                ckw, ccol = st.columns([1.2, 0.8], vertical_alignment="center")
+                with ckw:
+                    pairs[i] = (st.text_input(f"{t(lang,'keywords')} #{i+1}", value=pairs[i][0], key=f"kw_{i}"), pairs[i][1])
+                with ccol:
+                    pairs[i] = (pairs[i][0], st.color_picker(f"Color #{i+1}", value=pairs[i][1], key=f"kc_{i}"))
+            st.session_state["keyword_pairs"] = pairs
 
-    st.markdown("### 📄 Per-Agent Configuration & Editable Chain")
+            if st.button(t(lang, "apply"), use_container_width=True):
+                base = st.session_state["note_md"] or st.session_state["note_raw"]
+                st.session_state["note_render_html"] = apply_keyword_colors(base, st.session_state["keyword_pairs"])
 
-    prev_agent_id = None
-    for idx, a in enumerate(agents):
-        st.markdown(f"#### Step {idx+1}: {a.name}")
-        st.caption(a.description)
+    with right:
+        tabA, tabB, tabC = st.tabs([t(lang, "markdown_edit"), t(lang, "text_edit"), t(lang, "render")])
 
-        with st.container():
-            cfg_cols = st.columns([1, 1, 1, 1])
-            with cfg_cols[0]:
-                provider = st.selectbox(
-                    "Provider",
-                    options=list(AI_MODELS.keys()),
-                    index=list(AI_MODELS.keys()).index(a.provider) if a.provider in AI_MODELS else 0,
-                    key=f"provider_{a.id}",
-                )
-            with cfg_cols[1]:
-                model = st.selectbox(
-                    "Model",
-                    options=AI_MODELS[provider],
-                    index=AI_MODELS[provider].index(a.model) if a.model in AI_MODELS[provider] else 0,
-                    key=f"model_{a.id}",
-                )
-            with cfg_cols[2]:
-                temp = st.slider(
-                    "Temperature",
-                    0.0,
-                    1.0,
-                    value=float(a.temperature),
-                    key=f"temp_{a.id}",
-                )
-            with cfg_cols[3]:
-                max_tokens = st.number_input(
-                    "Max Tokens",
-                    min_value=256,
-                    max_value=12000,
-                    value=int(a.max_tokens),
-                    step=256,
-                    key=f"max_tokens_{a.id}",
-                )
+        with tabA:
+            st.session_state["note_md"] = st.text_area("Markdown", st.session_state["note_md"], height=540)
 
-            a.provider = provider
-            a.model = model
-            a.temperature = temp
-            a.max_tokens = max_tokens
+        with tabB:
+            st.session_state["note_raw"] = st.text_area("Text", st.session_state["note_raw"], height=540)
 
-            a.system_prompt = st.text_area(
-                "System Prompt (可編輯，繁體中文/English 混用皆可)",
-                value=a.system_prompt,
-                key=f"system_prompt_{a.id}",
-                height=160,
-            )
+        with tabC:
+            html = st.session_state["note_render_html"] or coral_highlight(st.session_state["note_md"] or st.session_state["note_raw"])
+            st.markdown(f"<div class='wow-card editor-frame'>{html}</div>", unsafe_allow_html=True)
 
-            st.markdown("---")
+else:
+    st.markdown(f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'workspace')}</h3></div>", unsafe_allow_html=True)
+    paneA, paneB = st.columns([1.05, 1.0], gap="large")
 
-            input_key = f"input_{a.id}"
-            if input_key in st.session_state:
-                default_input = st.session_state[input_key]
-            else:
-                if idx == 0:
-                    default_input = global_input
-                else:
-                    prev_id = prev_agent_id
-                    prev_output_key = f"output_{prev_id}"
-                    if prev_output_key in st.session_state and str(st.session_state[prev_output_key]).strip():
-                        default_input = st.session_state[prev_output_key]
-                    else:
-                        default_input = st.session_state.pipeline_results.get(prev_id, "")
+    # -------------------------
+    # Pane A: Source Material
+    # -------------------------
+    with paneA:
+        st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'source_material')}</h4></div>", unsafe_allow_html=True)
+        a1, a2, a3 = st.tabs([t(lang, "pdf_viewer"), t(lang, "ocr_editor"), t(lang, "raw_text")])
 
-            input_text = st.text_area(
-                "Input to this agent (editable; can be used for the next agent)",
-                value=default_input,
-                height=180,
-                key=input_key,
-            )
+        with a1:
+            pdf = st.file_uploader("Upload PDF", type=["pdf"])
+            if pdf:
+                st.session_state["pdf_bytes"] = pdf.read()
+                st.session_state["trimmed_pdf_bytes"] = None
 
-            run_step = st.button(f"▶️ Run only this step: {a.name}", key=f"run_step_{a.id}")
+            if st.session_state["pdf_bytes"]:
+                st.markdown(f"<div class='wow-mini'><b>{t(lang,'trim_pages')}</b></div>", unsafe_allow_html=True)
+                ranges = st.text_input(t(lang, "page_ranges"), value="1-2")
+                do_preview = st.checkbox(t(lang, "render_pdf"), value=True)
 
-            if run_step:
-                if st.session_state.app_state.mana < 20:
-                    st.error("Not enough Mana to run this agent (need at least 20).")
-                else:
-                    st.session_state.agent_status[a.id] = "running"
-                    with st.spinner(f"Running {a.name}…"):
+                colA, colB = st.columns([1, 1])
+                with colA:
+                    if st.button(t(lang, "trim_extract"), use_container_width=True):
                         try:
-                            result = run_agent(a, input_text or "")
-                            st.session_state.pipeline_results[a.id] = result
-                            st.session_state[f"output_{a.id}"] = result
-                            st.session_state.execution_log.append(
-                                {
-                                    "time": time.strftime("%H:%M:%S"),
-                                    "type": "success",
-                                    "msg": f"Agent {idx+1} ({a.name}) completed (single step).",
-                                }
-                            )
+                            pr = parse_page_ranges(ranges)
+                            if not pr:
+                                pr = [(1, 1)]
+                            trimmed = trim_pdf_bytes(st.session_state["pdf_bytes"], pr)
+                            st.session_state["trimmed_pdf_bytes"] = trimmed
+                            st.session_state["raw_text"] = extract_text_pypdf2(trimmed)
+                            # default OCR mirrors raw text initially
+                            st.session_state["ocr_text"] = st.session_state["raw_text"]
                         except Exception as e:
-                            st.session_state.agent_status[a.id] = "error"
-                            st.session_state.execution_log.append(
-                                {
-                                    "time": time.strftime("%H:%M:%S"),
-                                    "type": "error",
-                                    "msg": f"Agent {idx+1} ({a.name}) failed (single step): {e}",
-                                }
-                            )
-                            st.error(f"Agent {a.name} failed: {e}")
+                            st.error(f"Trim/Extract failed: {e}")
 
-            if a.id in st.session_state.pipeline_results:
-                st.markdown("**Output of this agent**")
+                with colB:
+                    trimmed = st.session_state["trimmed_pdf_bytes"] or st.session_state["pdf_bytes"]
+                    st.download_button(t(lang, "download_trimmed"), data=trimmed, file_name="trimmed.pdf", use_container_width=True)
 
-                view_mode = st.session_state.pipeline_view_modes.get(a.id, "Edit (Text)")
-                view_mode = st.radio(
-                    "View mode",
-                    options=["Edit (Text)", "Preview (Markdown)"],
-                    index=0 if view_mode == "Edit (Text)" else 1,
-                    horizontal=True,
-                    key=f"view_{a.id}",
-                )
-                st.session_state.pipeline_view_modes[a.id] = view_mode
+                if do_preview:
+                    st.markdown(render_pdf_iframe(st.session_state["trimmed_pdf_bytes"] or st.session_state["pdf_bytes"]), unsafe_allow_html=True)
 
-                output_key = f"output_{a.id}"
-                if output_key not in st.session_state:
-                    st.session_state[output_key] = st.session_state.pipeline_results[a.id]
-
-                if view_mode == "Edit (Text)":
-                    edited_output = st.text_area(
-                        "Editable Output (used as potential input for next step)",
-                        value=st.session_state[output_key],
-                        height=220,
-                        key=output_key,
-                    )
-                    st.session_state.pipeline_results[a.id] = edited_output
-                else:
-                    st.markdown(
-                        st.session_state.pipeline_results[a.id],
-                        help="Markdown preview of the agent output.",
-                    )
-
-                st.info(
-                    "Next agent’s default input comes from the latest version of this output, "
-                    "unless you manually override it."
+                st.divider()
+                st.markdown(f"<div class='wow-mini'><b>{t(lang,'ocr_engine')}</b></div>", unsafe_allow_html=True)
+                ocr_engine = st.selectbox(
+                    t(lang, "ocr_engine"),
+                    [t(lang, "extract_text"), t(lang, "local_ocr"), t(lang, "vision_ocr")],
+                    index=0,
                 )
 
-        prev_agent_id = a.id
-
-
-# =========================
-# 9. 510(k) SUMMARY ANALYSIS
-# =========================
-
-def summary_tab():
-    st.subheader("📑 510(k) Summary Analysis")
-
-    col_in, col_cfg = st.columns([2, 1])
-
-    with col_in:
-        st.markdown("**1. Input 510(k) Summary (text/markdown 或 PDF)**")
-        uploaded = st.file_uploader("Upload 510(k) summary (PDF)", type=["pdf"], key="summary_pdf")
-        summary_text = st.text_area(
-            "Or paste 510(k) summary (text / markdown)",
-            height=260,
-            key="summary_text",
-        )
-
-        if uploaded and not summary_text.strip():
-            reader = PdfReader(uploaded)
-            text_pages = []
-            for i, page in enumerate(reader.pages):
-                try:
-                    t = page.extract_text() or ""
-                except Exception:
-                    t = ""
-                text_pages.append(f"\n\n--- Page {i+1} ---\n{t}")
-            summary_text = "\n".join(text_pages)
-
-        st.markdown("**2. Preview (optional)**")
-        if uploaded:
-            with st.expander("Preview PDF"):
-                render_pdf_viewer(uploaded)
-
-    with col_cfg:
-        st.markdown("**Model & Prompt Settings**")
-        provider = st.selectbox("Provider", list(AI_MODELS.keys()), key="summary_provider")
-        model = st.selectbox("Model", AI_MODELS[provider], key="summary_model")
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.3, key="summary_temp")
-        max_tokens = st.number_input(
-            "Max Tokens",
-            min_value=512,
-            max_value=12000,
-            value=4000,
-            step=256,
-            key="summary_max_tokens",
-        )
-        default_prompt = (
-            "You are an FDA 510(k) reviewer.\n"
-            "Create a comprehensive, well-structured Markdown summary of the provided 510(k) summary.\n"
-            "- Length: approximately 2000–3000 words.\n"
-            "- Organize into clear sections: Device Overview, Intended Use, Indications for Use, "
-            "Technological Characteristics, Performance Testing, Biocompatibility, Sterilization, "
-            "Shelf Life, Substantial Equivalence, and Regulatory Notes.\n"
-            f"- Highlight 20–40 critical keywords by wrapping them in "
-            f"<span style='color:{CORAL_COLOR};font-weight:600;'>keyword</span>.\n"
-            "- Use tables where helpful. Do not invent data; only reorganize and clarify.\n"
-        )
-        user_prompt = st.text_area(
-            "Analysis Prompt (customizable)",
-            value=default_prompt,
-            height=220,
-            key="summary_prompt",
-        )
-
-        run_btn = st.button("🧠 Analyze 510(k) Summary", type="primary")
-
-    st.markdown("---")
-    st.markdown("### 📘 AI-Generated Summary")
-
-    if run_btn:
-        if not summary_text.strip():
-            st.error("Please provide summary text or upload a PDF.")
-            return
-        with st.spinner("Analyzing 510(k) summary…"):
-            try:
-                out = run_ad_hoc_llm(
-                    provider=provider,
-                    model=model,
-                    system_prompt=user_prompt,
-                    user_prompt=summary_text,
-                    max_tokens=int(max_tokens),
-                    temperature=float(temperature),
-                )
-                st.markdown(out, unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Summary analysis failed: {e}")
-
-
-# =========================
-# 10. REVIEW GUIDANCE BUILDER
-# =========================
-
-def guidance_tab():
-    st.subheader("📘 Review Guidance Builder")
-
-    col_in, col_cfg = st.columns([2, 1])
-
-    with col_in:
-        st.markdown("**1. Input Review Guidance (PDF / text / markdown)**")
-        g_pdf = st.file_uploader("Upload review guidance (PDF)", type=["pdf"], key="guidance_pdf")
-        g_text = st.text_area(
-            "Or paste review guidance text / markdown",
-            height=260,
-            key="guidance_text",
-        )
-
-        if g_pdf and not g_text.strip():
-            reader = PdfReader(g_pdf)
-            text_pages = []
-            for i, page in enumerate(reader.pages):
-                try:
-                    t = page.extract_text() or ""
-                except Exception:
-                    t = ""
-                text_pages.append(f"\n\n--- Page {i+1} ---\n{t}")
-            g_text = "\n".join(text_pages)
-
-        with st.expander("Preview PDF (optional)"):
-            if g_pdf:
-                render_pdf_viewer(g_pdf)
-            else:
-                st.info("Upload a PDF to preview.")
-
-        st.markdown("**2. Reviewer Instructions (optional)**")
-        instructions = st.text_area(
-            "Special reviewer instructions (e.g., focus on software validation, cybersecurity, pediatric use)",
-            height=160,
-            key="guidance_instructions",
-        )
-
-    with col_cfg:
-        st.markdown("**Model & Prompt Settings**")
-        provider = st.selectbox("Provider", list(AI_MODELS.keys()), key="guidance_provider")
-        model = st.selectbox("Model", AI_MODELS[provider], key="guidance_model")
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.25, key="guidance_temp")
-        max_tokens = st.number_input(
-            "Max Tokens",
-            min_value=512,
-            max_value=12000,
-            value=5000,
-            step=256,
-            key="guidance_max_tokens",
-        )
-
-        default_prompt = (
-            "You are creating an FDA 510(k) review guideline for reviewers.\n"
-            "Based on the supplied guidance text and optional reviewer instructions, produce:\n"
-            "1) A concise narrative guideline explaining how to review this type of device, and\n"
-            "2) A detailed checklist (Markdown) that a reviewer can use during 510(k) review.\n"
-            "Checklist must include sections such as: Administrative, Indications/IFU, Device Description, "
-            "Risk Management, Bench Testing, Biocompatibility, Sterilization, EMC/Electrical Safety, "
-            "Software/Cybersecurity (when applicable), Labeling, and Summary of SE.\n"
-            "For each checklist item, include columns: Item, Question, Evidence to Confirm, Pass/Fail/NA.\n"
-        )
-        sys_prompt = st.text_area(
-            "Guideline Prompt (customizable)",
-            value=default_prompt,
-            height=220,
-            key="guidance_prompt",
-        )
-
-        run_btn = st.button("📋 Generate Review Guideline + Checklist", type="primary")
-
-    st.markdown("---")
-    st.markdown("### 📑 Generated Guideline & Checklist")
-
-    if run_btn:
-        if not g_text.strip():
-            st.error("Please provide review guidance text or upload a PDF.")
-            return
-        combined = f"=== REVIEW GUIDANCE ===\n{g_text}\n\n=== REVIEWER INSTRUCTIONS ===\n{instructions}"
-        with st.spinner("Building guideline and checklist…"):
-            try:
-                out = run_ad_hoc_llm(
-                    provider=provider,
-                    model=model,
-                    system_prompt=sys_prompt,
-                    user_prompt=combined,
-                    max_tokens=int(max_tokens),
-                    temperature=float(temperature),
-                )
-                st.markdown(out)
-            except Exception as e:
-                st.error(f"Guideline generation failed: {e}")
-
-
-# =========================
-# 11. SUBMISSION OCR & AGENTS
-# =========================
-
-def ocr_agents_tab():
-    st.subheader("📂 Submission Material · PDF Viewer, OCR/Text & Agents")
-
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        st.markdown("**1. Upload Submission PDF & Select Pages**")
-        sub_pdf = st.file_uploader("Upload 510(k) submission (PDF)", type=["pdf"], key="sub_pdf")
-        if sub_pdf:
-            reader = PdfReader(sub_pdf)
-            num_pages = len(reader.pages)
-            page_idx = list(range(num_pages))
-            selected = st.multiselect(
-                "Select pages for OCR/text extraction",
-                options=page_idx,
-                default=page_idx[: min(5, num_pages)],
-                format_func=lambda i: f"Page {i+1}",
-                key="sub_pages",
-            )
-            st.markdown("**PDF Preview**")
-            render_pdf_viewer(sub_pdf)
-        else:
-            selected = []
-
-        st.markdown("**2. OCR/Text Extraction Settings**")
-        ocr_lang = st.selectbox(
-            "Language for OCR/Text focus",
-            options=["English", "繁體中文 / Traditional Chinese"],
-            key="ocr_lang",
-        )
-        extract_btn = st.button("🔍 Extract Text from Selected Pages")
-
-        if extract_btn:
-            if not sub_pdf or not selected:
-                st.error("Upload a PDF and select at least one page.")
-            else:
-                text = extract_pdf_pages_text(sub_pdf, selected)
-                if not text.strip():
-                    st.warning("No text extracted. (If this is image-only PDF, you may need true OCR.)")
-                st.session_state.ocr_text = text
-
-        st.markdown("**3. OCR/Text Document Editor**")
-        view_mode = st.radio(
-            "View mode",
-            options=["Edit (Markdown/Text)", "Preview (Markdown)"],
-            horizontal=True,
-            key="ocr_view_mode",
-        )
-        if view_mode == "Edit (Markdown/Text)":
-            txt = st.text_area(
-                "OCR / extracted document (you can edit freely)",
-                value=st.session_state.ocr_text,
-                height=320,
-                key="ocr_text_area",
-            )
-            st.session_state.ocr_text = txt
-        else:
-            st.markdown(st.session_state.ocr_text or "_No OCR text yet_", unsafe_allow_html=True)
-
-    with col_right:
-        st.markdown("**4. Auto Summary of OCR Document (2000–3000 words)**")
-        provider = st.selectbox("Provider", list(AI_MODELS.keys()), key="ocr_summary_provider")
-        model = st.selectbox("Model", AI_MODELS[provider], key="ocr_summary_model")
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.3, key="ocr_summary_temp")
-        max_tokens = st.number_input(
-            "Max Tokens",
-            min_value=1024,
-            max_value=12000,
-            value=6000,
-            step=256,
-            key="ocr_summary_max_tokens",
-        )
-        default_prompt = (
-            "You are an FDA 510(k) reviewer.\n"
-            "Create a comprehensive Markdown summary of the provided OCR/extracted submission content.\n"
-            "Length: 2000–3000 words. Use headings, bullet points, and tables.\n"
-            f"Highlight important regulatory keywords by wrapping them in "
-            f"<span style='color:{CORAL_COLOR};font-weight:600;'>keyword</span>.\n"
-            "Focus on: device description, intended use, indications, technological characteristics, "
-            "bench/animal/clinical testing, risk management, comparison to predicate, labeling, and any gaps.\n"
-        )
-        summary_prompt = st.text_area(
-            "Summary Prompt (customizable)",
-            value=default_prompt,
-            height=250,
-            key="ocr_summary_prompt",
-        )
-        run_summary = st.button("🧾 Generate 2000–3000 word summary")
-
-    st.markdown("---")
-    st.markdown("### 📄 OCR-Based Summary")
-
-    if run_summary:
-        if not st.session_state.ocr_text.strip():
-            st.error("No OCR/extracted text available. Please upload PDF and run extraction first.")
-        else:
-            with st.spinner("Summarizing OCR document…"):
-                try:
-                    out = run_ad_hoc_llm(
-                        provider=provider,
-                        model=model,
-                        system_prompt=summary_prompt,
-                        user_prompt=st.session_state.ocr_text,
-                        max_tokens=int(max_tokens),
-                        temperature=float(temperature),
-                    )
-                    st.markdown(out, unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"OCR summary failed: {e}")
-
-    st.markdown("---")
-    st.markdown("### 🤖 Keep Prompting on OCR Document / Run Agents")
-
-    col_chat, col_agents = st.columns(2)
-
-    with col_chat:
-        st.markdown("**Ad-hoc Q&A on OCR Document**")
-        chat_provider = st.selectbox("Provider", list(AI_MODELS.keys()), key="ocr_chat_provider")
-        chat_model = st.selectbox("Model", AI_MODELS[chat_provider], key="ocr_chat_model")
-        chat_temp = st.slider("Temperature", 0.0, 1.0, 0.3, key="ocr_chat_temp")
-        chat_max_tokens = st.number_input(
-            "Max Tokens",
-            min_value=512,
-            max_value=12000,
-            value=4000,
-            step=256,
-            key="ocr_chat_max",
-        )
-        chat_prompt = st.text_area(
-            "Enter your question/instructions about the OCR document",
-            height=160,
-            key="ocr_chat_prompt",
-        )
-        run_chat = st.button("💬 Ask AI about OCR document")
-
-        if run_chat:
-            if not st.session_state.ocr_text.strip():
-                st.error("No OCR text available.")
-            else:
-                combined = f"=== OCR DOCUMENT ===\n{st.session_state.ocr_text}\n\n=== REVIEWER QUESTION ===\n{chat_prompt}"
-                with st.spinner("Answering based on OCR document…"):
+                ocr_ranges = st.text_input(t(lang, "ocr_pages"), value=ranges)
+                if st.button(f"{t(lang,'ocr')} {t(lang,'run_agent')}", use_container_width=True):
                     try:
-                        out = run_ad_hoc_llm(
-                            provider=chat_provider,
-                            model=chat_model,
-                            system_prompt="You are an FDA 510(k) review assistant. Answer only from the OCR document.",
-                            user_prompt=combined,
-                            max_tokens=int(chat_max_tokens),
-                            temperature=float(chat_temp),
-                        )
-                        st.markdown(out)
+                        pr = parse_page_ranges(ocr_ranges) or [(1, 1)]
+                        pdf_bytes = st.session_state["trimmed_pdf_bytes"] or st.session_state["pdf_bytes"]
+                        trimmed_for_ocr = trim_pdf_bytes(pdf_bytes, pr)
+
+                        if ocr_engine == t(lang, "extract_text"):
+                            st.session_state["ocr_text"] = extract_text_pypdf2(trimmed_for_ocr)
+
+                        elif ocr_engine == t(lang, "local_ocr"):
+                            images = convert_from_bytes(trimmed_for_ocr, dpi=220)
+                            pages = []
+                            for i, img in enumerate(images, start=1):
+                                txt = pytesseract.image_to_string(img)
+                                pages.append(f"\n\n--- PAGE {i} ---\n{txt}")
+                            st.session_state["ocr_text"] = "\n".join(pages).strip()
+
+                        else:
+                            # Vision OCR: OpenAI or Gemini only here
+                            vprov = st.selectbox("Vision provider", ["openai", "gemini"], index=0, key="vision_provider")
+                            vmodel = st.selectbox("Vision model", provider_model_map()[vprov], index=0, key="vision_model")
+
+                            env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY"}[vprov]
+                            api_key = env_or_session(env_name)
+                            if not api_key:
+                                st.error(f"{env_name} missing.")
+                            else:
+                                images = convert_from_bytes(trimmed_for_ocr, dpi=220)
+                                st.session_state["ocr_text"] = call_vision_ocr(vprov, vmodel, api_key, images, lang=lang, max_tokens=12000)
                     except Exception as e:
-                        st.error(f"OCR chat failed: {e}")
+                        st.error(f"OCR failed: {e}")
 
-    with col_agents:
-        st.markdown("**Run Agent from agents.yaml on OCR Document**")
-        agents = st.session_state.agents
-        if not agents:
-            st.info("No agents defined in agents.yaml.")
-        else:
-            selected_agent_name = st.selectbox(
-                "Select agent",
-                options=[a.name for a in agents],
-                key="ocr_agent_select",
-            )
-            agent = next(a for a in agents if a.name == selected_agent_name)
+        with a2:
+            st.session_state["ocr_text"] = st.text_area("OCR Text", st.session_state["ocr_text"], height=520)
+            st.caption("Coral highlights render on the Intelligence side (Agent outputs / Final Report render).")
 
-            provider_override = st.selectbox(
-                "Override provider (optional)",
-                options=["(use agent config)"] + list(AI_MODELS.keys()),
-                key="ocr_agent_provider_override",
-            )
-            model_override = None
-            if provider_override != "(use agent config)":
-                model_override = st.selectbox(
-                    "Override model",
-                    options=AI_MODELS[provider_override],
-                    key="ocr_agent_model_override",
+        with a3:
+            st.session_state["raw_text"] = st.text_area("Raw extracted text", st.session_state["raw_text"], height=520)
+
+    # -------------------------
+    # Pane B: Intelligence Deck
+    # -------------------------
+    with paneB:
+        st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'intelligence_deck')}</h4></div>", unsafe_allow_html=True)
+        b1, b2, b3 = st.tabs([t(lang, "agent_outputs"), t(lang, "search_results"), t(lang, "final_report")])
+
+        with b2:
+            if query:
+                st.markdown(f"<div class='wow-mini'><b>{t(lang,'device360')}</b></div>", unsafe_allow_html=True)
+                d = d360 or {}
+                top = d.get("top_510k") or {}
+                st.markdown(
+                    f"<div class='wow-card'>"
+                    f"<b>{top.get('device_name','—')}</b><br/>"
+                    f"K#: {top.get('k_number','—')} | Product Code: {top.get('product_code','—')}<br/>"
+                    f"Applicant: {top.get('applicant','—')}"
+                    f"</div>",
+                    unsafe_allow_html=True,
                 )
 
-            max_tokens_override = st.number_input(
-                "Max Tokens (override)",
-                min_value=512,
-                max_value=12000,
-                value=int(agent.max_tokens),
-                step=256,
-                key="ocr_agent_max_tokens_override",
-            )
-            temp_override = st.slider(
-                "Temperature (override)",
-                0.0,
-                1.0,
-                value=float(agent.temperature),
-                key="ocr_agent_temp_override",
-            )
-            sys_prompt_override = st.text_area(
-                "System Prompt (override/append)",
-                value=agent.system_prompt,
-                height=160,
-                key="ocr_agent_sys_override",
-            )
-            run_agent_btn = st.button("🤖 Run selected agent on OCR document")
+                # show brief recall/mdr/gudid cards
+                rc = d.get("recalls") or []
+                md = d.get("mdr_examples") or []
+                gu = d.get("gudid_examples") or []
 
-            if run_agent_btn:
-                if not st.session_state.ocr_text.strip():
-                    st.error("No OCR text available.")
-                else:
-                    # Clone agent with overrides
-                    custom_agent = AgentConfig(
-                        id=agent.id + "_ocr",
-                        name=agent.name + " (OCR Run)",
-                        description=agent.description,
-                        model=model_override or agent.model,
-                        max_tokens=int(max_tokens_override),
-                        temperature=float(temp_override),
-                        system_prompt=sys_prompt_override,
-                        provider=(agent.provider if provider_override == "(use agent config)" else provider_override),
-                    )
-                    with st.spinner(f"Running agent '{agent.name}' on OCR document…"):
-                        try:
-                            out = run_agent(custom_agent, st.session_state.ocr_text)
-                            st.markdown(out)
-                        except Exception as e:
-                            st.error(f"OCR agent run failed: {e}")
+                cA, cB, cC = st.columns(3)
+                with cA:
+                    st.markdown("<div class='wow-mini'><b>Recall</b></div>", unsafe_allow_html=True)
+                    if rc:
+                        st.dataframe(pd.DataFrame(rc), use_container_width=True, height=220)
+                    else:
+                        st.write("—")
+                with cB:
+                    st.markdown("<div class='wow-mini'><b>MDR/ADR</b></div>", unsafe_allow_html=True)
+                    if md:
+                        st.dataframe(pd.DataFrame(md), use_container_width=True, height=220)
+                    else:
+                        st.write("—")
+                with cC:
+                    st.markdown("<div class='wow-mini'><b>GUDID</b></div>", unsafe_allow_html=True)
+                    if gu:
+                        st.dataframe(pd.DataFrame(gu), use_container_width=True, height=220)
+                    else:
+                        st.write("—")
 
+                st.divider()
+                results = engine.search_all(query)
+                for name in ["510k", "recall", "adr", "gudid"]:
+                    st.markdown(f"<div class='wow-mini'><b>{name.upper()}</b> ({len(results[name])})</div>", unsafe_allow_html=True)
+                    if results[name]:
+                        st.dataframe(pd.DataFrame([r.record for r in results[name]]), use_container_width=True, height=220)
 
-# =========================
-# 12. 510(k) REVIEW REPORT GENERATOR
-# =========================
-
-def review_report_tab():
-    st.subheader("📝 510(k) Review Report Composer")
-
-    col_in, col_cfg = st.columns([2, 1])
-
-    with col_in:
-        st.markdown("**1. Review Report Instructions**")
-        report_instr = st.text_area(
-            "Describe how you want the review report structured "
-            "(e.g., include benefit-risk, gap analysis vs guidance, decision rationale, etc.)",
-            height=200,
-            key="report_instr",
-        )
-
-        st.markdown("**2. Raw Review Materials**")
-        raw_file = st.file_uploader(
-            "Upload raw review materials (PDF / TXT / MD, optional)",
-            type=["pdf", "txt", "md", "markdown"],
-            key="report_raw_file",
-        )
-        raw_text = st.text_area(
-            "Or paste raw review materials (e.g. review notes, AI outputs, test summaries)",
-            height=260,
-            key="report_raw_text",
-        )
-
-        if raw_file and not raw_text.strip():
-            if raw_file.type == "application/pdf" or raw_file.name.lower().endswith(".pdf"):
-                reader = PdfReader(raw_file)
-                text_pages = []
-                for i, page in enumerate(reader.pages):
-                    try:
-                        t = page.extract_text() or ""
-                    except Exception:
-                        t = ""
-                    text_pages.append(f"\n\n--- Page {i+1} ---\n{t}")
-                raw_text = "\n".join(text_pages)
+        with b1:
+            if not agents_cfg or not agents_cfg.agents:
+                st.warning("No agents loaded. Upload or edit agents.yaml in the sidebar.")
             else:
-                raw_text = raw_file.getvalue().decode("utf-8", errors="ignore")
+                agent_names = [f"{a.name} ({a.id})" for a in agents_cfg.agents]
+                pick = st.selectbox("Select agent", agent_names, index=0)
+                agent = agents_cfg.agents[agent_names.index(pick)]
 
-    with col_cfg:
-        st.markdown("**Model & Prompt Settings**")
-        provider = st.selectbox("Provider", list(AI_MODELS.keys()), key="report_provider")
-        model = st.selectbox("Model", AI_MODELS[provider], key="report_model")
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.3, key="report_temp")
-        max_tokens = st.number_input(
-            "Max Tokens",
-            min_value=2000,
-            max_value=12000,
-            value=8000,
-            step=256,
-            key="report_max_tokens",
-        )
-        default_prompt = (
-            "You are writing a formal FDA 510(k) review report based on:\n"
-            "1) Reviewer instructions, and\n"
-            "2) Raw review materials.\n"
-            "Produce a comprehensive Markdown report of about 2000–3000 words with:\n"
-            "- Executive Summary\n"
-            "- Device Description & Indications for Use\n"
-            "- Regulatory Background (predicate, product code, classification)\n"
-            "- Summary of Submitted Testing (bench, biocompatibility, software, EMC/electrical, etc.)\n"
-            "- Risk/Benefit and SE Discussion\n"
-            "- Issues/Deficiencies (tables) and recommendations\n"
-            "- Conclusion and Suggested Decision.\n"
-            "Use tables for: testing overview, comparison to predicate, and deficiency tracking.\n"
-            f"Highlight key regulatory keywords in <span style='color:{CORAL_COLOR};font-weight:600;'>coral</span>.\n"
-        )
-        sys_prompt = st.text_area(
-            "Report Prompt (customizable)",
-            value=default_prompt,
-            height=260,
-            key="report_prompt",
-        )
-        run_btn = st.button("📄 Generate 510(k) Review Report", type="primary")
-
-    st.markdown("---")
-    st.markdown("### 📜 Generated Review Report")
-
-    if run_btn:
-        if not raw_text.strip():
-            st.error("Provide raw review materials (upload or paste).")
-            return
-        combined = (
-            f"=== REVIEW REPORT INSTRUCTIONS ===\n{report_instr}\n\n"
-            f"=== RAW REVIEW MATERIALS ===\n{raw_text}"
-        )
-        with st.spinner("Generating 510(k) review report…"):
-            try:
-                out = run_ad_hoc_llm(
-                    provider=provider,
-                    model=model,
-                    system_prompt=sys_prompt,
-                    user_prompt=combined,
-                    max_tokens=int(max_tokens),
-                    temperature=float(temperature),
+                pmap = provider_model_map()
+                provider = st.selectbox(
+                    t(lang, "provider"),
+                    list(pmap.keys()),
+                    index=(list(pmap.keys()).index(agent.provider) if agent.provider in pmap else 0),
                 )
-                st.markdown(out, unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Review report generation failed: {e}")
+                model = st.selectbox(t(lang, "model"), pmap[provider], index=0)
 
+                # User requested: default 12000 (even if agents.yaml has smaller)
+                max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=12000, step=256)
 
-# =========================
-# 13. NOTE KEEPER + AI MAGICS
-# =========================
+                system_prompt = st.text_area(t(lang, "system_prompt"), value=agent.system_prompt, height=140)
+                user_prompt = st.text_area(t(lang, "user_prompt"), value=agent.user_prompt, height=140)
 
-def parse_keyword_color_pairs(keyword_spec: str):
-    """
-    Format: 'keyword1#FF0000, keyword2#00FF00, keyword3'
-    If color omitted, coral is used.
-    """
-    pairs = []
-    for part in keyword_spec.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "#" in part:
-            kw, color = part.split("#", 1)
-            kw = kw.strip()
-            color = "#" + color.strip().lstrip("#")
-        else:
-            kw = part
-            color = CORAL_COLOR
-        pairs.append((kw, color))
-    return pairs
-
-
-def highlight_keywords_colored(text: str, keyword_spec: str) -> str:
-    if not keyword_spec.strip():
-        return text
-    pairs = parse_keyword_color_pairs(keyword_spec)
-    highlighted = text
-    for kw, color in pairs:
-        if not kw:
-            continue
-        highlighted = highlighted.replace(
-            kw,
-            f"<span style='color:{color};font-weight:600;'>{kw}</span>",
-        )
-    return highlighted
-
-
-def build_magic_prompt(magic: str) -> str:
-    if magic == "Structured Markdown (510(k)-aware)":
-        return (
-            "You are an expert regulatory scribe.\n"
-            "Convert the user's raw note into clean, well-structured Markdown suitable for a 510(k) file.\n"
-            "Use clear headings, bullets, and tables. Do not invent new information.\n"
-            f"Highlight 10–30 important keywords by wrapping them in "
-            f"<span style='color:{CORAL_COLOR};font-weight:600;'>keyword</span>.\n"
-        )
-    if magic == "Regulatory Entity Table (20 entities)":
-        return (
-            "Extract exactly 20 key regulatory entities from the note, focusing on:\n"
-            "- Device identity, indications, patient population\n"
-            "- Predicate devices\n"
-            "- Risk controls / mitigations\n"
-            "- Types of testing and main outcomes\n"
-            "- Key standards/guidances cited\n"
-            "Return a Markdown table:\n"
-            "| # | Entity | Category | Value | Notes |\n"
-            "with 20 rows."
-        )
-    if magic == "Risk & Mitigation Matrix":
-        return (
-            "From the note, extract risks and mitigations and build a Markdown table:\n"
-            "| Hazard | Failure Mode / Scenario | Harm | Mitigation / Control | Residual Risk |\n"
-            "Add brief text before and after the table summarizing the overall risk picture."
-        )
-    if magic == "Testing Coverage Map":
-        return (
-            "From the note, infer what testing has been done (bench, biocomp, EMC/electrical, "
-            "software, shelf life, packaging, clinical, etc.) and build:\n"
-            "1) A summary narrative, and\n"
-            "2) A Markdown table:\n"
-            "| Test Category | Standard / Method | Status | Key Results | Gaps / Comments |"
-        )
-    if magic == "Action Items / Deficiency List":
-        return (
-            "Extract all action items, open questions, and potential deficiencies from the note.\n"
-            "Return:\n"
-            "- A bullet list of issues, and\n"
-            "- A Markdown table:\n"
-            "| ID | Issue / Deficiency | Impact | Suggested Action | Owner | Due Date |"
-        )
-    if magic == "AI Keywords (color-customizable)":
-        return (
-            "You will receive user-specified keywords and colors separately. "
-            "Do NOT add color markup yourself. Just leave the text as-is; "
-            "color will be applied by the client."
-        )
-    return "You are a helpful AI Note Keeper for 510(k) reviewers."
-
-
-def note_keeper_tab():
-    st.subheader("🧾 AI Note Keeper · With AI Magics")
-
-    col_in, col_out = st.columns([2, 2])
-
-    with col_in:
-        st.markdown("**1. Input Note (text / markdown / file)**")
-        note_file = st.file_uploader(
-            "Upload note (PDF / TXT / MD)",
-            type=["pdf", "txt", "md", "markdown"],
-            key="note_file",
-        )
-        raw_text = st.text_area(
-            "Or paste note here",
-            height=220,
-            key="note_raw_text",
-        )
-
-        if note_file and not raw_text.strip():
-            if note_file.type == "application/pdf" or note_file.name.lower().endswith(".pdf"):
-                reader = PdfReader(note_file)
-                text_pages = []
-                for i, page in enumerate(reader.pages):
-                    try:
-                        t = page.extract_text() or ""
-                    except Exception:
-                        t = ""
-                    text_pages.append(f"\n\n--- Page {i+1} ---\n{t}")
-                raw_text = "\n".join(text_pages)
-            else:
-                raw_text = note_file.getvalue().decode("utf-8", errors="ignore")
-
-        if st.button("🔁 Load into editor"):
-            st.session_state.note_content = raw_text
-
-        st.markdown("**2. AI Magics**")
-        magic = st.selectbox(
-            "Choose an AI Magic",
-            options=[
-                "Structured Markdown (510(k)-aware)",
-                "Regulatory Entity Table (20 entities)",
-                "Risk & Mitigation Matrix",
-                "Testing Coverage Map",
-                "Action Items / Deficiency List",
-                "AI Keywords (color-customizable)",
-            ],
-            key="note_magic",
-        )
-
-        provider = st.selectbox("Provider", list(AI_MODELS.keys()), key="note_provider")
-        model = st.selectbox("Model", AI_MODELS[provider], key="note_model")
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.3, key="note_temp")
-        max_tokens = st.number_input(
-            "Max Tokens",
-            min_value=512,
-            max_value=12000,
-            value=4000,
-            step=256,
-            key="note_max_tokens",
-        )
-
-        if magic == "AI Keywords (color-customizable)":
-            st.markdown(
-                "Enter keywords and optional colors: `keyword#FF0000, another keyword#00FF00, third keyword`.\n"
-                "Keywords without color use coral by default."
-            )
-            keyword_spec = st.text_input(
-                "Keywords + colors",
-                key="note_keyword_spec",
-            )
-            run_magic = st.button("🎨 Apply AI Keywords (on current note)")
-        else:
-            run_magic = st.button("✨ Run Selected AI Magic")
-
-    with col_out:
-        st.markdown("**3. Note Editor & Preview**")
-        view_mode = st.radio(
-            "View mode",
-            options=["Edit (Markdown/Text)", "Preview (Markdown)"],
-            horizontal=True,
-            key="note_view_mode",
-        )
-
-        if view_mode == "Edit (Markdown/Text)":
-            edited = st.text_area(
-                "Working note (editable)",
-                value=st.session_state.note_content,
-                height=380,
-                key="note_editor",
-            )
-            st.session_state.note_content = edited
-        else:
-            st.markdown(st.session_state.note_content, unsafe_allow_html=True)
-
-        if run_magic:
-            if magic == "AI Keywords (color-customizable)":
-                # Client-side coloring
-                base_text = st.session_state.note_content
-                spec = st.session_state.get("note_keyword_spec", "")
-                colored = highlight_keywords_colored(base_text, spec)
-                st.session_state.note_content = colored
-                st.success("Keywords highlighted with chosen colors.")
-            else:
-                if not st.session_state.note_content.strip():
-                    st.error("Note is empty. Load or paste some content first.")
+                # Input source selector (still: last edited output preferred)
+                source_choice = st.radio(
+                    t(lang, "agent_input_source"),
+                    [t(lang, "use_last_output"), t(lang, "use_ocr_text"), t(lang, "use_raw_text")],
+                    index=0,
+                    horizontal=False,
+                )
+                last = st.session_state["agent_outputs"][-1]["edited_output"] if st.session_state["agent_outputs"] else ""
+                if source_choice == t(lang, "use_last_output") and last.strip():
+                    base_input = last
+                elif source_choice == t(lang, "use_raw_text"):
+                    base_input = st.session_state["raw_text"]
                 else:
-                    sys_prompt = build_magic_prompt(magic)
-                    with st.spinner(f"Running Magic: {magic}…"):
-                        try:
-                            out = run_ad_hoc_llm(
-                                provider=provider,
-                                model=model,
-                                system_prompt=sys_prompt,
-                                user_prompt=st.session_state.note_content,
-                                max_tokens=int(max_tokens),
-                                temperature=float(temperature),
+                    base_input = st.session_state["ocr_text"]
+
+                run_colA, run_colB = st.columns([1, 1])
+                with run_colA:
+                    if st.button(t(lang, "execute_next"), use_container_width=True):
+                        env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "xai": "XAI_API_KEY"}[
+                            provider
+                        ]
+                        api_key = env_or_session(env_name)
+                        if not api_key:
+                            st.error(f"{env_name} missing.")
+                        else:
+                            full_system = (st.session_state["skill_md"].strip() + "\n\n" + system_prompt.strip()).strip()
+                            full_user = f"{user_prompt.strip()}\n\n---\nINPUT:\n{base_input}"
+                            try:
+                                out = call_llm_text(
+                                    provider=provider,
+                                    model=model,
+                                    api_key=api_key,
+                                    system=full_system,
+                                    user=full_user,
+                                    max_tokens=int(max_tokens),
+                                    temperature=float(agent.temperature),
+                                )
+                                st.session_state["agent_outputs"].append(
+                                    {
+                                        "agent_id": agent.id,
+                                        "name": agent.name,
+                                        "provider": provider,
+                                        "model": model,
+                                        "input": base_input,
+                                        "output": out,
+                                        "edited_output": out,
+                                    }
+                                )
+                            except Exception as e:
+                                st.error(f"Agent run failed: {e}")
+
+                with run_colB:
+                    if st.button("Append last output to Final Report", use_container_width=True):
+                        if st.session_state["agent_outputs"]:
+                            st.session_state["final_report"] += "\n\n" + st.session_state["agent_outputs"][-1]["edited_output"]
+
+                st.divider()
+                # Run history with editable chaining
+                if st.session_state["agent_outputs"]:
+                    for i, run in enumerate(reversed(st.session_state["agent_outputs"])):
+                        idx = len(st.session_state["agent_outputs"]) - 1 - i
+                        st.markdown(
+                            f"<div class='wow-mini'><b>Run {idx+1}</b> — {run['name']} ({run['provider']} / {run['model']})</div>",
+                            unsafe_allow_html=True,
+                        )
+                        v1, v2 = st.tabs([f"Render #{idx+1}", f"{t(lang,'edit_output_for_next')} #{idx+1}"])
+                        with v1:
+                            html = coral_highlight(run["output"])
+                            st.markdown(f"<div class='wow-card editor-frame'>{html}</div>", unsafe_allow_html=True)
+                        with v2:
+                            st.session_state["agent_outputs"][idx]["edited_output"] = st.text_area(
+                                "",
+                                value=run["edited_output"],
+                                height=220,
+                                key=f"edited_{idx}",
                             )
-                            st.session_state.note_content = out
-                            st.success("Magic applied. Check the editor/preview.")
-                        except Exception as e:
-                            st.error(f"Note Magic error: {e}")
+
+        with b3:
+            report_tabs = st.tabs([t(lang, "markdown_edit"), t(lang, "render")])
+            with report_tabs[0]:
+                st.session_state["final_report"] = st.text_area("Final Report (Markdown)", st.session_state["final_report"], height=540)
+            with report_tabs[1]:
+                html = coral_highlight(st.session_state["final_report"])
+                st.markdown(f"<div class='wow-card editor-frame'>{html}</div>", unsafe_allow_html=True)
 
 
-# =========================
-# 14. DASHBOARD TAB
-# =========================
-
-def dashboard_tab():
-    st.subheader("📊 Interactive Analytics Dashboard")
-
-    m = st.session_state.metrics
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total AI Calls", m["total_runs"])
-    c2.metric("Gemini Calls", m["provider_calls"]["gemini"])
-    c3.metric("OpenAI Calls", m["provider_calls"]["openai"])
-    c4.metric("Last Run Duration (s)", round(m["last_run_duration"], 2))
-
-    st.markdown("#### Provider Usage")
-    providers = list(m["provider_calls"].keys())
-    values = list(m["provider_calls"].values())
-    st.bar_chart({"providers": providers, "calls": values}, x="providers", y="calls")
-
-    st.markdown("#### Execution Log Timeline")
-    for log in reversed(st.session_state.execution_log[-50:]):
-        style = {
-            "info": "color:#5DADE2",
-            "success": "color:#2ECC71",
-            "error": "color:#E74C3C",
-        }.get(log["type"], "")
-        st.markdown(
-            f"<span style='font-size:0.75rem;opacity:0.8;'>{log['time']}</span> "
-            f"<span style='{style}'>{log['msg']}</span>",
-            unsafe_allow_html=True,
-        )
-
-
-# =========================
-# 15. AGENTS & SKILLS (EDIT / UPLOAD / DOWNLOAD)
-# =========================
-
-def agents_skills_tab():
-    st.subheader("🤖 Agents & Skills Configuration")
-
-    col_agents, col_skills = st.columns(2)
-
-    with col_agents:
-        st.markdown("### agents.yaml")
-        path = "agents.yaml"
-        current_yaml = ""
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                current_yaml = f.read()
-        yaml_text = st.text_area(
-            "Edit agents.yaml",
-            value=current_yaml,
-            height=320,
-            key="agents_yaml_editor",
-        )
-        col_a1, col_a2, col_a3 = st.columns(3)
-        with col_a1:
-            if st.button("💾 Save agents.yaml"):
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(yaml_text)
-                st.session_state.agents = load_agents_yaml(path)
-                st.success("agents.yaml saved and reloaded.")
-        with col_a2:
-            if st.button("🔄 Reload from disk"):
-                st.session_state.agents = load_agents_yaml(path)
-                st.experimental_rerun()
-        with col_a3:
-            st.download_button(
-                "⬇️ Download agents.yaml",
-                data=yaml_text.encode("utf-8"),
-                file_name="agents.yaml",
-                mime="text/x-yaml",
-            )
-        uploaded_yaml = st.file_uploader("Upload new agents.yaml", type=["yaml", "yml"], key="upload_agents_yaml")
-        if uploaded_yaml:
-            txt = uploaded_yaml.getvalue().decode("utf-8", errors="ignore")
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(txt)
-            st.session_state.agents = load_agents_yaml(path)
-            st.success("Uploaded agents.yaml and reloaded agents.")
-
-    with col_skills:
-        st.markdown("### SKILL.md")
-        skill_path = "SKILL.md"
-        skill_text = ""
-        if os.path.exists(skill_path):
-            with open(skill_path, "r", encoding="utf-8") as f:
-                skill_text = f.read()
-        skill_editor = st.text_area(
-            "Edit SKILL.md",
-            value=skill_text,
-            height=320,
-            key="skill_md_editor",
-        )
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            if st.button("💾 Save SKILL.md"):
-                with open(skill_path, "w", encoding="utf-8") as f:
-                    f.write(skill_editor)
-                st.success("SKILL.md saved.")
-        with col_s2:
-            st.download_button(
-                "⬇️ Download SKILL.md",
-                data=skill_editor.encode("utf-8"),
-                file_name="SKILL.md",
-                mime="text/markdown",
-            )
-        with col_s3:
-            uploaded_skill = st.file_uploader("Upload SKILL.md", type=["md", "markdown"], key="upload_skill_md")
-            if uploaded_skill:
-                txt = uploaded_skill.getvalue().decode("utf-8", errors="ignore")
-                with open(skill_path, "w", encoding="utf-8") as f:
-                    f.write(txt)
-                st.success("Uploaded and saved SKILL.md.")
-
-
-# =========================
-# 16. SETTINGS / LANGUAGE / THEME
-# =========================
-
-def settings_sidebar():
-    app = st.session_state.app_state
-    with st.sidebar:
-        st.markdown("## ⚙️ Settings")
-        lang = st.selectbox(
-            "Language 語言",
-            options=list(LANG_LABELS.keys()),
-            format_func=lambda k: LANG_LABELS[k],
-            index=list(LANG_LABELS.keys()).index(app.language),
-        )
-        mode = st.selectbox(
-            "Theme Mode",
-            options=list(THEME_MODE_LABELS.keys()),
-            format_func=lambda k: THEME_MODE_LABELS[k],
-            index=list(THEME_MODE_LABELS.keys()).index(app.theme_mode),
-        )
-        app.language = lang
-        app.theme_mode = mode
-
-        st.markdown("### 🎨 Painter Style")
-        theme_ids = [t["id"] for t in PAINTER_THEMES]
-        idx = theme_ids.index(app.current_theme_id) if app.current_theme_id in theme_ids else 0
-
-        def label_func(i):
-            t = PAINTER_THEMES[i]
-            if lang == "en":
-                return t["name_en"]
-            return t["name_zh"]
-
-        selected = st.selectbox(
-            "Theme",
-            options=list(range(len(PAINTER_THEMES))),
-            index=idx,
-            format_func=label_func,
-        )
-        app.current_theme_id = PAINTER_THEMES[selected]["id"]
-
-        style_jackpot()
-
-        st.markdown("---")
-        api_key_input_ui()
-
-
-# =========================
-# 17. MAIN APP
-# =========================
-
-def main():
-    st.set_page_config(
-        page_title="FDA 510(k) Review Studio · Painter Edition",
-        page_icon="🌸",
-        layout="wide",
-    )
-    init_session_state()
-    inject_global_css()
-    settings_sidebar()
-    wow_header()
-    wow_status_bar()
-
-    tabs = st.tabs(
-        [
-            "📑 510(k) Summary",
-            "📘 Review Guidance",
-            "📂 Submission OCR & Agents",
-            "📝 Review Report",
-            "🔗 Agent Pipeline",
-            "🧾 AI Note Keeper",
-            "🤖 Agents & Skills",
-            "📊 Dashboard",
-        ]
-    )
-    with tabs[0]:
-        summary_tab()
-    with tabs[1]:
-        guidance_tab()
-    with tabs[2]:
-        ocr_agents_tab()
-    with tabs[3]:
-        review_report_tab()
-    with tabs[4]:
-        pipeline_tab()
-    with tabs[5]:
-        note_keeper_tab()
-    with tabs[6]:
-        agents_skills_tab()
-    with tabs[7]:
-        dashboard_tab()
-
-
-if __name__ == "__main__":
-    main()
+# -----------------------------
+# 20 comprehensive follow-up questions
+# -----------------------------
+followups = [
+    "1) 你希望 OCR 的「頁碼/段落定位」採用哪一種規則（原始頁碼、裁切後頁碼、或兩者並存）？",
+    "2) Vision OCR 的預設策略要不要做自動判斷：若 PyPDF2 擷取文字太少或疑似表格破碎就改用 Vision？",
+    "3) 代理輸出是否需要統一加入『證據定位欄』（頁碼/段落#）並支援點擊後跳回來源面板？",
+    "4) Dashboard 的 KPI 是否要加入『最高召回等級』、『最高 MDR 嚴重度』與『Gap 計數』的總分風險指標？",
+    "5) 你希望 31 個代理是否以「產品類別模板」分組（Stapler、IVD、Infusion、Implant 等）一鍵串跑？",
+    "6) Agent chaining 的輸入來源是否要擴充：可選『搜尋結果（360 卡）』、『特定資料表列』、『Final Report』作為下一代理輸入？",
+    "7) 是否要新增『Pin Evidence』功能，把特定段落/搜尋紀錄釘選到 Final Report 附錄？",
+    "8) Coral 高亮是否要允許在 UI 裡編輯 ontology（新增/刪除詞表）並存於 session？",
+    "9) AI Note Keeper 的『Organize Note』是否要強制輸出固定章節（摘要/證據/缺口/待辦/關鍵詞）？",
+    "10) AI Keywords Highlighter 是否要支援不限 3 組關鍵詞、可動態新增列、並提供 whole-word/regex 模式？",
+    "11) 代理輸出渲染是否需要支援 Mermaid 即時渲染（目前僅輸出文字，未強制渲染圖）？",
+    "12) 你希望 agents.yaml 的 provider/model 是否要允許『每個代理多模型候選』並在 UI 一鍵切換對照結果？",
+    "13) 對 Anthropic/xAI 是否需要更細的參數（例如 reasoning effort / thinking）在 UI 顯示（若 API 支援）？",
+    "14) 是否要新增『紅線模式』：自動標記疑似誇大宣稱、用途外延、或與 Recall/MDR 相衝突的段落？",
+    "15) Search Engine 是否要加入『predicate_k_numbers 反向索引』：輸入一個 K# 可找所有引用它為 predicate 的裝置？",
+    "16) 是否要加入『輸出版本管理』：每次代理執行、每次手動編修都可回溯 diff？",
+    "17) 你希望 Final Report 是否要提供『一鍵彙編』：自動抓取最後 N 次代理輸出 + 360 卡 + Pin evidence？",
+    "18) 對 PDF Viewer 是否要加入『頁面截圖』並直接送入 Vision OCR/視覺問答（針對表格/圖）？",
+    "19) 是否要加入『PII/PHI 偵測與遮罩』在任何外部 API 呼叫前先執行（並提供遮罩預覽）？",
+    "20) 你希望整套 UI 的『Painter Styles』是否要影響字體（例如報告用 Serif、原始資料用 Mono）並提供每風格預設？",
+]
+st.markdown("<div class='wow-card'><h4 style='margin:0'>20 Follow-up Questions</h4></div>", unsafe_allow_html=True)
+st.write("\n".join(followups))
