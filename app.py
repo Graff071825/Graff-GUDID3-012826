@@ -5,18 +5,16 @@ import base64
 import json
 import random
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
 import streamlit as st
 import pandas as pd
 
-# Core libs
 import yaml
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 from PyPDF2 import PdfReader, PdfWriter
 
-# Optional OCR / imaging
 from pdf2image import convert_from_bytes
 import pytesseract
 from PIL import Image
@@ -97,13 +95,35 @@ STRINGS = {
         "text_edit": "Text Edit",
         "keywords": "Keywords",
         "keyword_colors": "Keyword Colors",
-        "add_keywords": "Add keyword-color pairs",
         "download": "Download",
         "upload": "Upload",
         "save": "Save",
         "standardized_loaded": "agents.yaml standardized and loaded.",
         "invalid_agents": "agents.yaml invalid",
         "fab_hint": "FAB is visual; run agents in Agent Outputs tab.",
+        "dataset_studio": "Dataset Studio",
+        "dataset_type": "Dataset type",
+        "paste_dataset": "Paste dataset (CSV/JSON/text)",
+        "upload_dataset": "Upload dataset file (CSV/JSON/TXT)",
+        "auto_detect": "Auto-detect",
+        "parse_load": "Parse & Load",
+        "standardize": "Standardize",
+        "preview": "Preview (first 20 records)",
+        "download_csv": "Download CSV",
+        "download_json": "Download JSON",
+        "reset_defaults": "Reset to default datasets",
+        "dataset_summary": "Dataset Summary (Markdown)",
+        "generate_summary": "Generate Summary",
+        "dataset_query": "Dataset Query (LLM / keyword search)",
+        "keyword_search": "Keyword search",
+        "llm_prompt": "LLM prompt",
+        "run_query": "Run Query",
+        "query_results": "Query results (Markdown)",
+        "rows_in_context": "Rows in context",
+        "use_filtered": "Use filtered rows in context",
+        "filter_results": "Filter results",
+        "loaded_rows": "Loaded rows",
+        "standardization_report": "Standardization report",
     },
     "zh-TW": {
         "app_title": "FDA 510(k) 審查工作室 — 法規指揮中心",
@@ -176,13 +196,35 @@ STRINGS = {
         "text_edit": "文字編輯",
         "keywords": "關鍵詞",
         "keyword_colors": "關鍵詞上色",
-        "add_keywords": "新增 關鍵詞-顏色 對",
         "download": "下載",
         "upload": "上傳",
         "save": "儲存",
         "standardized_loaded": "agents.yaml 已標準化並載入。",
         "invalid_agents": "agents.yaml 無效",
         "fab_hint": "浮動按鈕為視覺效果；請在「代理輸出」分頁執行。",
+        "dataset_studio": "資料集工作室",
+        "dataset_type": "資料集類型",
+        "paste_dataset": "貼上資料集（CSV/JSON/文字）",
+        "upload_dataset": "上傳資料集檔案（CSV/JSON/TXT）",
+        "auto_detect": "自動偵測",
+        "parse_load": "解析並載入",
+        "standardize": "標準化",
+        "preview": "預覽（前 20 筆）",
+        "download_csv": "下載 CSV",
+        "download_json": "下載 JSON",
+        "reset_defaults": "重置為預設資料集",
+        "dataset_summary": "資料集摘要（Markdown）",
+        "generate_summary": "產生摘要",
+        "dataset_query": "資料集查詢（LLM / 關鍵字搜尋）",
+        "keyword_search": "關鍵字搜尋",
+        "llm_prompt": "LLM 提示詞",
+        "run_query": "執行查詢",
+        "query_results": "查詢結果（Markdown）",
+        "rows_in_context": "上下文列數",
+        "use_filtered": "使用篩選後資料作為上下文",
+        "filter_results": "篩選結果",
+        "loaded_rows": "已載入筆數",
+        "standardization_report": "標準化報告",
     },
 }
 
@@ -262,7 +304,6 @@ def inject_css(theme: str, painter_accent: str, coral: str = "#FF7F50"):
         color: var(--fg);
       }}
 
-      /* Glass card */
       .wow-card {{
         background: var(--card);
         border: 1px solid var(--border);
@@ -272,7 +313,6 @@ def inject_css(theme: str, painter_accent: str, coral: str = "#FF7F50"):
         box-shadow: 0 18px 55px var(--shadow);
       }}
 
-      /* Smaller glass */
       .wow-mini {{
         background: var(--card);
         border: 1px solid var(--border);
@@ -281,7 +321,6 @@ def inject_css(theme: str, painter_accent: str, coral: str = "#FF7F50"):
         backdrop-filter: blur(12px);
       }}
 
-      /* Chips */
       .chip {{
         display:inline-flex;
         align-items:center;
@@ -300,13 +339,11 @@ def inject_css(theme: str, painter_accent: str, coral: str = "#FF7F50"):
         box-shadow: 0 0 0 3px rgba(255,255,255,0.06);
       }}
 
-      /* Coral reserved */
       .coral {{
         color: var(--coral);
         font-weight: 800;
       }}
 
-      /* Editor frame */
       .editor-frame {{
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -314,14 +351,12 @@ def inject_css(theme: str, painter_accent: str, coral: str = "#FF7F50"):
         background: rgba(0,0,0,0.00);
       }}
 
-      /* Dashboard grid vibe */
       div[data-testid="stDataFrame"] {{
         border: 1px solid var(--border);
         border-radius: 14px;
         overflow: hidden;
       }}
 
-      /* A simple visual floating action button (non-functional) */
       .fab {{
         position: fixed;
         bottom: 22px;
@@ -349,11 +384,7 @@ def inject_css(theme: str, painter_accent: str, coral: str = "#FF7F50"):
         color: var(--fg);
         backdrop-filter: blur(10px);
       }}
-
-      /* Make Streamlit headers tighter */
-      h1, h2, h3, h4 {{
-        margin-top: 0.2rem;
-      }}
+      h1, h2, h3, h4 {{ margin-top: 0.2rem; }}
     </style>
     """
 
@@ -1097,7 +1128,6 @@ def coral_highlight(text: str, keywords: Optional[List[str]] = None) -> str:
         return ""
     kws = keywords or DEFAULT_ONTOLOGY
     kws = sorted(set([k.strip() for k in kws if k and k.strip()]), key=len, reverse=True)
-
     out = text
 
     def repl(m):
@@ -1105,7 +1135,6 @@ def coral_highlight(text: str, keywords: Optional[List[str]] = None) -> str:
         return f'<span class="coral"><b>{w}</b></span>'
 
     for k in kws:
-        # word-ish boundaries but allow "(k)" and punctuation
         pattern = re.compile(rf"(?i)({re.escape(k)})")
         out = pattern.sub(repl, out)
     return out
@@ -1131,7 +1160,7 @@ class RegulatorySearchEngine:
     def _fuzzy_hits(self, df: pd.DataFrame, cols: List[str], query: str, min_score=75, limit=25):
         q = (query or "").strip().lower()
         hits = []
-        if not q:
+        if not q or df is None or df.empty:
             return hits
         for _, row in df.iterrows():
             best = 0
@@ -1209,15 +1238,13 @@ class RegulatorySearchEngine:
             mdrs = [x.record for x in r["adr"] if x.record.get("product_code") == product_code]
             gudid = [x.record for x in r["gudid"] if x.record.get("product_code") == product_code]
 
-        # Extra fuzzy by device name if product_code absent
-        if not product_code and device_name:
-            recalls = [x.record for x in r["recall"]][:5]
-            mdrs = [x.record for x in r["adr"]][:5]
-            gudid = [x.record for x in r["gudid"]][:5]
+        if (not product_code) and device_name:
+            recalls = [x.record for x in r["recall"]][:8]
+            mdrs = [x.record for x in r["adr"]][:8]
+            gudid = [x.record for x in r["gudid"]][:8]
 
         top_recall_class = None
         if recalls:
-            # Prefer worst class: I > II > III
             priority = {"I": 3, "II": 2, "III": 1}
             recalls_sorted = sorted(recalls, key=lambda rr: priority.get(str(rr.get("recall_class", "")).upper(), 0), reverse=True)
             top_recall_class = recalls_sorted[0].get("recall_class")
@@ -1254,11 +1281,8 @@ class AgentsConfig(BaseModel):
 
 def load_and_standardize_agents_yaml(raw_text: str) -> AgentsConfig:
     data = yaml.safe_load(raw_text) or {}
-
-    # Accept list form
     if isinstance(data, list):
         data = {"version": "1.0", "agents": data}
-
     data.setdefault("version", "1.0")
     data.setdefault("agents", [])
 
@@ -1273,7 +1297,6 @@ def load_and_standardize_agents_yaml(raw_text: str) -> AgentsConfig:
         a.setdefault("description", "")
         a.setdefault("user_prompt", "Analyze the provided content.")
         fixed.append(a)
-
     data["agents"] = fixed
     return AgentsConfig.model_validate(data)
 
@@ -1323,10 +1346,7 @@ def call_llm_text(
         client = OpenAI(api_key=api_key)
         resp = client.responses.create(
             model=model,
-            input=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             max_output_tokens=max_tokens,
             temperature=temperature,
         )
@@ -1361,16 +1381,12 @@ def call_llm_text(
         return "".join(parts).strip()
 
     if provider == "xai":
-        # xAI is commonly OpenAI-compatible; adjust base_url if needed
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         resp = client.responses.create(
             model=model,
-            input=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             max_output_tokens=max_tokens,
             temperature=temperature,
         )
@@ -1387,10 +1403,6 @@ def call_vision_ocr(
     lang: str,
     max_tokens: int = 12000,
 ) -> str:
-    """
-    Vision OCR: send page images to OpenAI/Gemini to extract text with better tables.
-    Returns combined text with page markers.
-    """
     provider = (provider or "").lower().strip()
     sys = "You are an OCR engine for regulatory PDFs. Preserve tables when possible. Output plain text (no markdown)."
     if lang == "zh-TW":
@@ -1448,10 +1460,6 @@ def call_vision_ocr(
 # PDF tools
 # -----------------------------
 def parse_page_ranges(ranges_str: str) -> List[Tuple[int, int]]:
-    """
-    Accept: "1-5, 10, 12-14"
-    Returns list of (start,end) inclusive 1-based.
-    """
     ranges_str = (ranges_str or "").strip()
     if not ranges_str:
         return []
@@ -1506,6 +1514,380 @@ def render_pdf_iframe(pdf_bytes: bytes, height: int = 520) -> str:
         type="application/pdf">
     </iframe>
     """
+
+
+# -----------------------------
+# Dataset Studio: parsing + standardization
+# -----------------------------
+CANON_510K = [
+    "k_number", "decision_date", "decision", "device_name", "applicant", "manufacturer_name", "product_code",
+    "regulation_number", "device_class", "panel", "review_advisory_committee", "predicate_k_numbers", "summary"
+]
+CANON_ADR = [
+    "adverse_event_id", "report_date", "event_type", "patient_outcome", "device_problem", "manufacturer_name",
+    "brand_name", "product_code", "device_class", "udi_di", "recall_number_link", "narrative"
+]
+CANON_GUDID = [
+    "primary_di", "udi_di", "device_description", "device_class", "manufacturer_name", "brand_name", "product_code",
+    "gmdn_term", "mri_safety", "sterile", "single_use", "implantable", "contains_nrl", "version_or_model_number",
+    "catalog_number", "record_status", "publish_date", "company_contact_email", "company_contact_phone",
+    "company_state", "company_country"
+]
+CANON_RECALL = [
+    "recall_number", "recall_class", "event_date", "termination_date", "status", "firm_name", "manufacturer_name",
+    "product_description", "product_code", "code_info", "reason_for_recall", "distribution_pattern",
+    "quantity_in_commerce", "country", "state"
+]
+
+SYNONYMS = {
+    "510k": {
+        "k_number": ["k_number", "knumber", "k", "k_no", "k#", "knum", "submission_number"],
+        "decision_date": ["decision_date", "date", "clearance_date"],
+        "decision": ["decision", "decision_code", "se_decision", "determination"],
+        "device_name": ["device_name", "device", "name", "device title", "device_title"],
+        "applicant": ["applicant", "submitter", "company", "applicant_name"],
+        "manufacturer_name": ["manufacturer_name", "manufacturer", "mfr", "firm_name"],
+        "product_code": ["product_code", "procode", "productcode", "code"],
+        "regulation_number": ["regulation_number", "regulation", "21cfr", "cfr"],
+        "device_class": ["device_class", "class"],
+        "panel": ["panel", "medical_specialty", "review_panel"],
+        "review_advisory_committee": ["review_advisory_committee", "committee"],
+        "predicate_k_numbers": ["predicate_k_numbers", "predicates", "predicate", "predicate_k", "predicate_knumbers"],
+        "summary": ["summary", "clearance_summary", "decision_summary", "description"],
+    },
+    "adr": {
+        "adverse_event_id": ["adverse_event_id", "mdr_id", "event_id", "report_id"],
+        "report_date": ["report_date", "date"],
+        "event_type": ["event_type", "type"],
+        "patient_outcome": ["patient_outcome", "outcome"],
+        "device_problem": ["device_problem", "problem", "issue"],
+        "manufacturer_name": ["manufacturer_name", "manufacturer", "mfr", "firm_name"],
+        "brand_name": ["brand_name", "brand", "device_brand"],
+        "product_code": ["product_code", "code"],
+        "device_class": ["device_class", "class"],
+        "udi_di": ["udi_di", "udi", "primary_di"],
+        "recall_number_link": ["recall_number_link", "recall_number", "linked_recall"],
+        "narrative": ["narrative", "description", "event_description", "text"],
+    },
+    "gudid": {
+        "primary_di": ["primary_di", "primarydi", "udi_di", "udi"],
+        "udi_di": ["udi_di", "primary_di", "udi", "di"],
+        "device_description": ["device_description", "description", "device_desc"],
+        "device_class": ["device_class", "class"],
+        "manufacturer_name": ["manufacturer_name", "manufacturer", "mfr", "company"],
+        "brand_name": ["brand_name", "brand", "device_brand"],
+        "product_code": ["product_code", "code"],
+        "gmdn_term": ["gmdn_term", "gmdn", "gmdn_name"],
+        "mri_safety": ["mri_safety", "mri", "mri_status"],
+        "sterile": ["sterile", "is_sterile"],
+        "single_use": ["single_use", "singleuse", "is_single_use"],
+        "implantable": ["implantable", "is_implantable"],
+        "contains_nrl": ["contains_nrl", "nrl", "latex", "contains_latex"],
+        "version_or_model_number": ["version_or_model_number", "model", "model_number", "version"],
+        "catalog_number": ["catalog_number", "catalog", "cat_no"],
+        "record_status": ["record_status", "status"],
+        "publish_date": ["publish_date", "date"],
+        "company_contact_email": ["company_contact_email", "email"],
+        "company_contact_phone": ["company_contact_phone", "phone", "telephone"],
+        "company_state": ["company_state", "state"],
+        "company_country": ["company_country", "country"],
+    },
+    "recall": {
+        "recall_number": ["recall_number", "recall", "recall_id", "z_number", "z#"],
+        "recall_class": ["recall_class", "class"],
+        "event_date": ["event_date", "date", "initiation_date"],
+        "termination_date": ["termination_date", "term_date"],
+        "status": ["status", "recall_status"],
+        "firm_name": ["firm_name", "firm", "company", "applicant"],
+        "manufacturer_name": ["manufacturer_name", "manufacturer", "mfr", "firm_name"],
+        "product_description": ["product_description", "description", "product"],
+        "product_code": ["product_code", "code"],
+        "code_info": ["code_info", "lots", "serials", "batch"],
+        "reason_for_recall": ["reason_for_recall", "reason", "root_cause", "cause"],
+        "distribution_pattern": ["distribution_pattern", "distribution"],
+        "quantity_in_commerce": ["quantity_in_commerce", "quantity", "qty"],
+        "country": ["country"],
+        "state": ["state"],
+    }
+}
+
+
+def _norm_col(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def detect_format(text: str) -> str:
+    t0 = (text or "").lstrip()
+    if not t0:
+        return "unknown"
+    if t0.startswith("[") or t0.startswith("{"):
+        return "json"
+    # naive CSV heuristic: has commas and newline
+    if "," in t0 and "\n" in t0:
+        return "csv"
+    return "text"
+
+
+def parse_dataset_blob(blob: Union[str, bytes], filename: Optional[str] = None) -> pd.DataFrame:
+    if isinstance(blob, bytes):
+        text = blob.decode("utf-8", errors="ignore")
+    else:
+        text = blob
+
+    fmt = None
+    if filename:
+        fn = filename.lower()
+        if fn.endswith(".json"):
+            fmt = "json"
+        elif fn.endswith(".csv"):
+            fmt = "csv"
+        elif fn.endswith(".txt") or fn.endswith(".md"):
+            fmt = detect_format(text)
+        else:
+            fmt = detect_format(text)
+    else:
+        fmt = detect_format(text)
+
+    if fmt == "json":
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            # common wrappers
+            for k in ["data", "records", "items", "rows"]:
+                if k in obj and isinstance(obj[k], list):
+                    obj = obj[k]
+                    break
+            if isinstance(obj, dict):
+                obj = [obj]
+        if not isinstance(obj, list):
+            raise ValueError("JSON must be a list of objects or an object/records wrapper.")
+        return pd.DataFrame(obj)
+
+    if fmt == "csv":
+        return pd.read_csv(io.StringIO(text))
+
+    # "text" fallback: try JSON then CSV again
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            obj = [obj]
+        return pd.DataFrame(obj)
+    except Exception:
+        try:
+            return pd.read_csv(io.StringIO(text))
+        except Exception as e:
+            raise ValueError(f"Unable to parse dataset text as JSON or CSV: {e}")
+
+
+def _best_match_column(df_cols: List[str], candidates: List[str]) -> Optional[str]:
+    norm_map = {_norm_col(c): c for c in df_cols}
+    for cand in candidates:
+        n = _norm_col(cand)
+        if n in norm_map:
+            return norm_map[n]
+    # fallback fuzzy
+    best = None
+    best_score = 0
+    for c in df_cols:
+        for cand in candidates:
+            sc = fuzz.ratio(_norm_col(c), _norm_col(cand))
+            if sc > best_score:
+                best_score = sc
+                best = c
+    return best if best_score >= 85 else None
+
+
+def standardize_df(dataset_type: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+    """
+    Transform arbitrary df into standardized schema for dataset_type.
+    Returns standardized df and a standardization report (markdown).
+    """
+    dataset_type = dataset_type.lower()
+    if df is None or df.empty:
+        return pd.DataFrame(), "No data to standardize."
+
+    if dataset_type == "510k":
+        canon = CANON_510K
+        syn = SYNONYMS["510k"]
+    elif dataset_type == "adr":
+        canon = CANON_ADR
+        syn = SYNONYMS["adr"]
+    elif dataset_type == "gudid":
+        canon = CANON_GUDID
+        syn = SYNONYMS["gudid"]
+    elif dataset_type == "recall":
+        canon = CANON_RECALL
+        syn = SYNONYMS["recall"]
+    else:
+        raise ValueError("Unknown dataset type")
+
+    original_cols = list(df.columns)
+    mapped = {}
+    report_lines = ["### Standardization Mapping", "", "| Canonical field | Source column |", "|---|---|"]
+
+    for cfield in canon:
+        src = _best_match_column(original_cols, syn.get(cfield, [cfield]))
+        mapped[cfield] = src
+        report_lines.append(f"| `{cfield}` | `{src if src else '— (missing)'}` |")
+
+    out = pd.DataFrame()
+    for cfield in canon:
+        src = mapped[cfield]
+        if src and src in df.columns:
+            out[cfield] = df[src]
+        else:
+            out[cfield] = None
+
+    # Normalize types / known list fields
+    if dataset_type == "510k":
+        def to_list(x):
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return []
+            if isinstance(x, list):
+                return x
+            if isinstance(x, str):
+                # split by comma/semicolon
+                parts = [p.strip() for p in re.split(r"[;,]+", x) if p.strip()]
+                return parts
+            return [str(x)]
+        out["predicate_k_numbers"] = out["predicate_k_numbers"].apply(to_list)
+
+    if dataset_type == "gudid":
+        # booleans for sterile/single_use/implantable/contains_nrl if possible
+        for bcol in ["sterile", "single_use", "implantable", "contains_nrl"]:
+            def to_bool(v):
+                if isinstance(v, bool):
+                    return v
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return None
+                s = str(v).strip().lower()
+                if s in ["true", "t", "yes", "y", "1"]:
+                    return True
+                if s in ["false", "f", "no", "n", "0"]:
+                    return False
+                return None
+            out[bcol] = out[bcol].apply(to_bool)
+
+    if dataset_type == "recall":
+        # quantity_in_commerce numeric where possible
+        def to_int(v):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return None
+            try:
+                return int(float(str(v).replace(",", "").strip()))
+            except Exception:
+                return None
+        out["quantity_in_commerce"] = out["quantity_in_commerce"].apply(to_int)
+
+    # Remove completely empty rows (all canonical fields null/empty)
+    def row_has_signal(r):
+        for c in canon:
+            v = r.get(c)
+            if isinstance(v, list) and len(v) > 0:
+                return True
+            if v is None:
+                continue
+            if isinstance(v, float) and pd.isna(v):
+                continue
+            if str(v).strip() != "":
+                return True
+        return False
+
+    out = out[out.apply(row_has_signal, axis=1)].reset_index(drop=True)
+    report_lines += ["", f"**Rows:** {len(out)}", f"**Original columns:** {len(original_cols)}"]
+    return out, "\n".join(report_lines)
+
+
+def df_to_json_records(df: pd.DataFrame) -> str:
+    return json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2)
+
+
+def keyword_filter_df(df: pd.DataFrame, keyword: str, limit: int = 50) -> pd.DataFrame:
+    if df is None or df.empty or not (keyword or "").strip():
+        return pd.DataFrame()
+    kw = keyword.strip().lower()
+
+    def hit_row(row) -> bool:
+        for v in row.values:
+            if v is None:
+                continue
+            if isinstance(v, float) and pd.isna(v):
+                continue
+            if isinstance(v, list):
+                if any(kw in str(x).lower() for x in v):
+                    return True
+            else:
+                if kw in str(v).lower():
+                    return True
+        return False
+
+    out = df[df.apply(hit_row, axis=1)]
+    return out.head(limit).copy()
+
+
+def dataset_context_markdown(dataset_type: str, df: pd.DataFrame, max_rows: int = 50) -> str:
+    """
+    Build a compact but information-dense context package for LLM:
+    - schema
+    - missing rates
+    - key field top values
+    - sample rows (limited)
+    """
+    if df is None or df.empty:
+        return f"Dataset `{dataset_type}` is empty."
+
+    n = len(df)
+    cols = list(df.columns)
+
+    missing = []
+    for c in cols:
+        miss = df[c].isna().mean() if c in df.columns else 1.0
+        missing.append((c, miss))
+    missing_sorted = sorted(missing, key=lambda x: x[1], reverse=True)
+
+    # Basic top values for a few likely key columns
+    key_cols_map = {
+        "510k": ["k_number", "device_name", "applicant", "product_code", "decision"],
+        "adr": ["adverse_event_id", "brand_name", "product_code", "patient_outcome", "device_problem", "recall_number_link"],
+        "gudid": ["udi_di", "brand_name", "product_code", "sterile", "single_use", "implantable", "contains_nrl", "mri_safety"],
+        "recall": ["recall_number", "product_code", "recall_class", "status", "firm_name", "reason_for_recall"],
+    }
+    keys = [c for c in key_cols_map.get(dataset_type, []) if c in df.columns]
+
+    top_tables = []
+    for c in keys:
+        try:
+            vc = df[c].astype(str).value_counts().head(10)
+            tbl = "| value | count |\n|---|---|\n" + "\n".join([f"| `{v}` | {int(k)} |" for v, k in vc.items()])
+            top_tables.append(f"### Top values: `{c}`\n{tbl}\n")
+        except Exception:
+            continue
+
+    miss_tbl = "| column | missing_rate |\n|---|---|\n" + "\n".join([f"| `{c}` | {m:.2%} |" for c, m in missing_sorted[: min(20, len(missing_sorted))]])
+    sample_df = df.head(max_rows).copy()
+
+    # Ensure JSON-serializable values
+    sample_records = sample_df.to_dict(orient="records")
+    sample_json = json.dumps(sample_records, ensure_ascii=False, indent=2)
+
+    return "\n".join(
+        [
+            f"## Dataset Context: `{dataset_type}`",
+            f"- Rows: **{n}**",
+            f"- Columns: **{len(cols)}**",
+            "",
+            "### Columns",
+            ", ".join([f"`{c}`" for c in cols]),
+            "",
+            "### Missingness (top 20 by missing rate)",
+            miss_tbl,
+            "",
+            *top_tables,
+            f"### Sample records (first {min(max_rows, n)} rows as JSON)",
+            "```json",
+            sample_json,
+            "```",
+        ]
+    )
 
 
 # -----------------------------
@@ -1581,7 +1963,6 @@ def apply_keyword_colors(html_or_text: str, keyword_color_pairs: List[Tuple[str,
     for kw, color in keyword_color_pairs:
         if not kw.strip():
             continue
-        # Simple literal replacement; user can provide exact phrase. (Can be upgraded to regex later.)
         out = out.replace(
             kw,
             f'<span style="color:{color}; font-weight:900; text-shadow:0 0 18px rgba(255,255,255,0.08)">{kw}</span>',
@@ -1601,7 +1982,6 @@ def ss_init():
     st.session_state.setdefault("style", PAINTER_STYLES[0])
 
     st.session_state.setdefault("api_keys", {})  # stored in session only
-
     st.session_state.setdefault("global_query", "")
 
     st.session_state.setdefault("pdf_bytes", None)
@@ -1612,16 +1992,28 @@ def ss_init():
 
     st.session_state.setdefault("agents_yaml_text", "")
     st.session_state.setdefault("skill_md", "")
-
     st.session_state.setdefault("agent_outputs", [])  # list of runs
-
     st.session_state.setdefault("final_report", "")
 
     st.session_state.setdefault("note_raw", "")
     st.session_state.setdefault("note_md", "")
     st.session_state.setdefault("note_render_html", "")
-
     st.session_state.setdefault("keyword_pairs", [("", "#FF7F50"), ("", "#00B3B3"), ("", "#F4D03F")])
+
+    # Dataset Studio state: default/custom dataframes and outputs
+    st.session_state.setdefault("df_510k", pd.DataFrame(DEFAULT_510K))
+    st.session_state.setdefault("df_adr", pd.DataFrame(DEFAULT_ADR))
+    st.session_state.setdefault("df_gudid", pd.DataFrame(DEFAULT_GUDID))
+    st.session_state.setdefault("df_recall", pd.DataFrame(DEFAULT_RECALL))
+
+    st.session_state.setdefault("ds_input_text", "")
+    st.session_state.setdefault("ds_std_report", "")
+    st.session_state.setdefault("ds_summary_md", "")
+    st.session_state.setdefault("ds_summary_prompt", "")
+    st.session_state.setdefault("ds_query_prompt", "")
+    st.session_state.setdefault("ds_query_md", "")
+    st.session_state.setdefault("ds_keyword", "")
+    st.session_state.setdefault("ds_filtered_df", pd.DataFrame())
 
 
 ss_init()
@@ -1649,12 +2041,18 @@ style = st.session_state["style"]
 
 st.markdown(inject_css(theme, style["accent"]), unsafe_allow_html=True)
 
-# DataFrames
-df_510k = pd.DataFrame(DEFAULT_510K)
-df_adr = pd.DataFrame(DEFAULT_ADR)
-df_gudid = pd.DataFrame(DEFAULT_GUDID)
-df_recall = pd.DataFrame(DEFAULT_RECALL)
-engine = RegulatorySearchEngine(df_510k, df_adr, df_gudid, df_recall)
+
+# Build engine from session datasets (so Dataset Studio overrides immediately)
+def build_engine_from_session() -> RegulatorySearchEngine:
+    return RegulatorySearchEngine(
+        st.session_state["df_510k"],
+        st.session_state["df_adr"],
+        st.session_state["df_gudid"],
+        st.session_state["df_recall"],
+    )
+
+
+engine = build_engine_from_session()
 
 
 # -----------------------------
@@ -1678,12 +2076,14 @@ with top:
     c1, c2, c3 = st.columns([2.2, 3.0, 1.2], vertical_alignment="center")
 
     with c1:
-        st.markdown(
-            f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'app_title')}</h3></div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'app_title')}</h3></div>", unsafe_allow_html=True)
 
     with c2:
+        df_510k = st.session_state["df_510k"]
+        df_adr = st.session_state["df_adr"]
+        df_gudid = st.session_state["df_gudid"]
+        df_recall = st.session_state["df_recall"]
+
         chips = ""
         chips += key_status_chip("OpenAI", "OPENAI_API_KEY")
         chips += key_status_chip("Gemini", "GEMINI_API_KEY")
@@ -1694,7 +2094,6 @@ with top:
             f"<span class='chip'><span class='dot'></span>"
             f"510k:{len(df_510k)} ADR:{len(df_adr)} GUDID:{len(df_gudid)} Recall:{len(df_recall)}</span>"
         )
-
         ocr_chip = (
             f"<span class='chip'><span class='dot' style='background:var(--ok)'></span>{t(lang,'ocr')}: {t(lang,'loaded')}</span>"
             if st.session_state["ocr_text"].strip()
@@ -1702,8 +2101,6 @@ with top:
         )
 
         st.markdown(f"<div class='wow-card'>{chips}{dataset_chip}{ocr_chip}</div>", unsafe_allow_html=True)
-
-        # Gamified bar: "mana" = number of agent runs (mod)
         mana = (len(st.session_state["agent_outputs"]) % 10) / 10.0
         st.progress(mana, text="Review Mana (agent runs)")
 
@@ -1722,13 +2119,11 @@ with top:
                 st.session_state["style"] = jackpot_style()
                 st.rerun()
 
-# refresh
 lang = st.session_state["lang"]
 theme = st.session_state["theme"]
 style = st.session_state["style"]
 st.markdown(inject_css(theme, style["accent"]), unsafe_allow_html=True)
 
-# Floating WOW button (visual)
 st.markdown(f"<div class='fab'>RUN</div><div class='fab-sub'>{t(lang,'fab_hint')}</div>", unsafe_allow_html=True)
 
 
@@ -1739,19 +2134,10 @@ with st.sidebar:
     st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'library')}</h4></div>", unsafe_allow_html=True)
     st.caption(t(lang, "api_keys"))
 
-    # API keys: only show inputs if env var missing; never display env key.
-    key_specs = [
-        ("OpenAI", "OPENAI_API_KEY"),
-        ("Gemini", "GEMINI_API_KEY"),
-        ("Anthropic", "ANTHROPIC_API_KEY"),
-        ("xAI", "XAI_API_KEY"),
-    ]
+    key_specs = [("OpenAI", "OPENAI_API_KEY"), ("Gemini", "GEMINI_API_KEY"), ("Anthropic", "ANTHROPIC_API_KEY"), ("xAI", "XAI_API_KEY")]
     for label, env_name in key_specs:
         if os.environ.get(env_name):
-            st.markdown(
-                f"<div class='wow-mini'><b>{label}</b><br/><span class='chip'>{t(lang,'managed_by_system')}</span></div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"<div class='wow-mini'><b>{label}</b><br/><span class='chip'>{t(lang,'managed_by_system')}</span></div>", unsafe_allow_html=True)
         else:
             v = st.text_input(f"{label} key", type="password", value=st.session_state["api_keys"].get(env_name, ""))
             if v:
@@ -1774,7 +2160,6 @@ with st.sidebar:
         st.error(f"{t(lang,'invalid_agents')}: {e}")
 
     st.divider()
-
     st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'skills')}</h4></div>", unsafe_allow_html=True)
     st.session_state["skill_md"] = st.text_area("SKILL.md", st.session_state["skill_md"], height=220)
     st.download_button(f"{t(lang,'download')} SKILL.md", st.session_state["skill_md"], file_name="SKILL.md")
@@ -1799,37 +2184,26 @@ with qcol2:
 query = st.session_state["global_query"].strip()
 d360 = engine.device_360_view(query) if query else None
 
-# Dashboard (always visible area)
+
+# Dashboard
 st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'dashboard')}</h4></div>", unsafe_allow_html=True)
 k1, k2, k3, k4 = st.columns(4)
 with k1:
     top_k = (d360 or {}).get("top_510k") or {}
-    st.markdown(
-        f"<div class='wow-mini'><b>K#</b><br/>{top_k.get('k_number','—')}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='wow-mini'><b>K#</b><br/>{top_k.get('k_number','—')}</div>", unsafe_allow_html=True)
 with k2:
-    st.markdown(
-        f"<div class='wow-mini'><b>Decision</b><br/>{top_k.get('decision','—')}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='wow-mini'><b>Decision</b><br/>{top_k.get('decision','—')}</div>", unsafe_allow_html=True)
 with k3:
     mdr_count = (d360 or {}).get("mdr_count", 0) if d360 else 0
-    st.markdown(
-        f"<div class='wow-mini'><b>{t(lang,'mdr_count')}</b><br/>{mdr_count}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='wow-mini'><b>{t(lang,'mdr_count')}</b><br/>{mdr_count}</div>", unsafe_allow_html=True)
 with k4:
     rc = (d360 or {}).get("top_recall_class") if d360 else None
     rc_html = f"<span class='coral'>{rc}</span>" if rc else "—"
-    st.markdown(
-        f"<div class='wow-mini'><b>{t(lang,'recall_class')}</b><br/>{rc_html}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='wow-mini'><b>{t(lang,'recall_class')}</b><br/>{rc_html}</div>", unsafe_allow_html=True)
 
 
 # -----------------------------
-# Command Center
+# Mode: AI Note Keeper
 # -----------------------------
 if view_mode == t(lang, "note_keeper"):
     st.markdown(f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'note_keeper')}</h3></div>", unsafe_allow_html=True)
@@ -1845,36 +2219,30 @@ if view_mode == t(lang, "note_keeper"):
             b = upl.read()
             name = upl.name.lower()
             if name.endswith(".pdf"):
-                # Fast path: text extract; user can use OCR in Command Center if needed.
                 st.session_state["note_raw"] = extract_text_pypdf2(b)
             else:
                 st.session_state["note_raw"] = b.decode("utf-8", errors="ignore")
 
         st.markdown(f"<div class='wow-mini'><b>{t(lang,'ai_magics')}</b></div>", unsafe_allow_html=True)
         pmap = provider_model_map()
-        provider = st.selectbox(t(lang, "provider"), list(pmap.keys()), index=0)
-        model = st.selectbox(t(lang, "model"), pmap[provider], index=0)
-        max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=6000, step=256)
+        provider = st.selectbox(t(lang, "provider"), list(pmap.keys()), index=0, key="note_provider")
+        model = st.selectbox(t(lang, "model"), pmap[provider], index=0, key="note_model")
+        max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=6000, step=256, key="note_max_tokens")
 
-        magic = st.selectbox("Magic", MAGICS, index=0)
+        magic = st.selectbox("Magic", MAGICS, index=0, key="note_magic")
 
         if magic != "AI Keywords Highlighter":
-            if st.button(t(lang, "run_magic"), use_container_width=True):
-                env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "xai": "XAI_API_KEY"}[
-                    provider
-                ]
+            if st.button(t(lang, "run_magic"), use_container_width=True, key="note_run_magic"):
+                env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "xai": "XAI_API_KEY"}[provider]
                 api_key = env_or_session(env_name)
                 if not api_key:
                     st.error(f"{env_name} missing.")
                 else:
                     out = magic_run(magic, provider, model, api_key, st.session_state["note_raw"], lang=lang, max_tokens=int(max_tokens))
                     st.session_state["note_md"] = out
-                    # Default render: coral highlight ontology
                     st.session_state["note_render_html"] = coral_highlight(out)
         else:
             st.caption(t(lang, "keyword_colors"))
-
-            # 3 default pairs + expandable
             pairs = st.session_state["keyword_pairs"]
             for i in range(len(pairs)):
                 ckw, ccol = st.columns([1.2, 0.8], vertical_alignment="center")
@@ -1884,63 +2252,58 @@ if view_mode == t(lang, "note_keeper"):
                     pairs[i] = (pairs[i][0], st.color_picker(f"Color #{i+1}", value=pairs[i][1], key=f"kc_{i}"))
             st.session_state["keyword_pairs"] = pairs
 
-            if st.button(t(lang, "apply"), use_container_width=True):
+            if st.button(t(lang, "apply"), use_container_width=True, key="note_apply_keywords"):
                 base = st.session_state["note_md"] or st.session_state["note_raw"]
                 st.session_state["note_render_html"] = apply_keyword_colors(base, st.session_state["keyword_pairs"])
 
     with right:
         tabA, tabB, tabC = st.tabs([t(lang, "markdown_edit"), t(lang, "text_edit"), t(lang, "render")])
-
         with tabA:
-            st.session_state["note_md"] = st.text_area("Markdown", st.session_state["note_md"], height=540)
-
+            st.session_state["note_md"] = st.text_area("Markdown", st.session_state["note_md"], height=540, key="note_md_edit")
         with tabB:
-            st.session_state["note_raw"] = st.text_area("Text", st.session_state["note_raw"], height=540)
-
+            st.session_state["note_raw"] = st.text_area("Text", st.session_state["note_raw"], height=540, key="note_raw_edit")
         with tabC:
             html = st.session_state["note_render_html"] or coral_highlight(st.session_state["note_md"] or st.session_state["note_raw"])
             st.markdown(f"<div class='wow-card editor-frame'>{html}</div>", unsafe_allow_html=True)
 
+# -----------------------------
+# Mode: Command Center
+# -----------------------------
 else:
     st.markdown(f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'workspace')}</h3></div>", unsafe_allow_html=True)
     paneA, paneB = st.columns([1.05, 1.0], gap="large")
 
-    # -------------------------
     # Pane A: Source Material
-    # -------------------------
     with paneA:
         st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'source_material')}</h4></div>", unsafe_allow_html=True)
         a1, a2, a3 = st.tabs([t(lang, "pdf_viewer"), t(lang, "ocr_editor"), t(lang, "raw_text")])
 
         with a1:
-            pdf = st.file_uploader("Upload PDF", type=["pdf"])
+            pdf = st.file_uploader("Upload PDF", type=["pdf"], key="cc_pdf_upload")
             if pdf:
                 st.session_state["pdf_bytes"] = pdf.read()
                 st.session_state["trimmed_pdf_bytes"] = None
 
             if st.session_state["pdf_bytes"]:
                 st.markdown(f"<div class='wow-mini'><b>{t(lang,'trim_pages')}</b></div>", unsafe_allow_html=True)
-                ranges = st.text_input(t(lang, "page_ranges"), value="1-2")
-                do_preview = st.checkbox(t(lang, "render_pdf"), value=True)
+                ranges = st.text_input(t(lang, "page_ranges"), value="1-2", key="cc_ranges")
+                do_preview = st.checkbox(t(lang, "render_pdf"), value=True, key="cc_preview")
 
                 colA, colB = st.columns([1, 1])
                 with colA:
-                    if st.button(t(lang, "trim_extract"), use_container_width=True):
+                    if st.button(t(lang, "trim_extract"), use_container_width=True, key="cc_trim_extract"):
                         try:
-                            pr = parse_page_ranges(ranges)
-                            if not pr:
-                                pr = [(1, 1)]
+                            pr = parse_page_ranges(ranges) or [(1, 1)]
                             trimmed = trim_pdf_bytes(st.session_state["pdf_bytes"], pr)
                             st.session_state["trimmed_pdf_bytes"] = trimmed
                             st.session_state["raw_text"] = extract_text_pypdf2(trimmed)
-                            # default OCR mirrors raw text initially
                             st.session_state["ocr_text"] = st.session_state["raw_text"]
                         except Exception as e:
                             st.error(f"Trim/Extract failed: {e}")
 
                 with colB:
                     trimmed = st.session_state["trimmed_pdf_bytes"] or st.session_state["pdf_bytes"]
-                    st.download_button(t(lang, "download_trimmed"), data=trimmed, file_name="trimmed.pdf", use_container_width=True)
+                    st.download_button(t(lang, "download_trimmed"), data=trimmed, file_name="trimmed.pdf", use_container_width=True, key="cc_download_trimmed")
 
                 if do_preview:
                     st.markdown(render_pdf_iframe(st.session_state["trimmed_pdf_bytes"] or st.session_state["pdf_bytes"]), unsafe_allow_html=True)
@@ -1951,10 +2314,11 @@ else:
                     t(lang, "ocr_engine"),
                     [t(lang, "extract_text"), t(lang, "local_ocr"), t(lang, "vision_ocr")],
                     index=0,
+                    key="cc_ocr_engine",
                 )
 
-                ocr_ranges = st.text_input(t(lang, "ocr_pages"), value=ranges)
-                if st.button(f"{t(lang,'ocr')} {t(lang,'run_agent')}", use_container_width=True):
+                ocr_ranges = st.text_input(t(lang, "ocr_pages"), value=ranges, key="cc_ocr_ranges")
+                if st.button(f"{t(lang,'ocr')} {t(lang,'run_agent')}", use_container_width=True, key="cc_run_ocr"):
                     try:
                         pr = parse_page_ranges(ocr_ranges) or [(1, 1)]
                         pdf_bytes = st.session_state["trimmed_pdf_bytes"] or st.session_state["pdf_bytes"]
@@ -1962,7 +2326,6 @@ else:
 
                         if ocr_engine == t(lang, "extract_text"):
                             st.session_state["ocr_text"] = extract_text_pypdf2(trimmed_for_ocr)
-
                         elif ocr_engine == t(lang, "local_ocr"):
                             images = convert_from_bytes(trimmed_for_ocr, dpi=220)
                             pages = []
@@ -1970,12 +2333,9 @@ else:
                                 txt = pytesseract.image_to_string(img)
                                 pages.append(f"\n\n--- PAGE {i} ---\n{txt}")
                             st.session_state["ocr_text"] = "\n".join(pages).strip()
-
                         else:
-                            # Vision OCR: OpenAI or Gemini only here
-                            vprov = st.selectbox("Vision provider", ["openai", "gemini"], index=0, key="vision_provider")
-                            vmodel = st.selectbox("Vision model", provider_model_map()[vprov], index=0, key="vision_model")
-
+                            vprov = st.selectbox("Vision provider", ["openai", "gemini"], index=0, key="cc_vision_provider")
+                            vmodel = st.selectbox("Vision model", provider_model_map()[vprov], index=0, key="cc_vision_model")
                             env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY"}[vprov]
                             api_key = env_or_session(env_name)
                             if not api_key:
@@ -1987,19 +2347,18 @@ else:
                         st.error(f"OCR failed: {e}")
 
         with a2:
-            st.session_state["ocr_text"] = st.text_area("OCR Text", st.session_state["ocr_text"], height=520)
-            st.caption("Coral highlights render on the Intelligence side (Agent outputs / Final Report render).")
+            st.session_state["ocr_text"] = st.text_area("OCR Text", st.session_state["ocr_text"], height=520, key="cc_ocr_text")
+            st.caption("Coral highlights render on the Intelligence side.")
 
         with a3:
-            st.session_state["raw_text"] = st.text_area("Raw extracted text", st.session_state["raw_text"], height=520)
+            st.session_state["raw_text"] = st.text_area("Raw extracted text", st.session_state["raw_text"], height=520, key="cc_raw_text")
 
-    # -------------------------
-    # Pane B: Intelligence Deck
-    # -------------------------
+    # Pane B: Intelligence Deck (adds Dataset Studio tab)
     with paneB:
         st.markdown(f"<div class='wow-card'><h4 style='margin:0'>{t(lang,'intelligence_deck')}</h4></div>", unsafe_allow_html=True)
-        b1, b2, b3 = st.tabs([t(lang, "agent_outputs"), t(lang, "search_results"), t(lang, "final_report")])
+        b1, b2, b3, b4 = st.tabs([t(lang, "agent_outputs"), t(lang, "search_results"), t(lang, "final_report"), t(lang, "dataset_studio")])
 
+        # Search Results
         with b2:
             if query:
                 st.markdown(f"<div class='wow-mini'><b>{t(lang,'device360')}</b></div>", unsafe_allow_html=True)
@@ -2014,7 +2373,6 @@ else:
                     unsafe_allow_html=True,
                 )
 
-                # show brief recall/mdr/gudid cards
                 rc = d.get("recalls") or []
                 md = d.get("mdr_examples") or []
                 gu = d.get("gudid_examples") or []
@@ -2022,22 +2380,13 @@ else:
                 cA, cB, cC = st.columns(3)
                 with cA:
                     st.markdown("<div class='wow-mini'><b>Recall</b></div>", unsafe_allow_html=True)
-                    if rc:
-                        st.dataframe(pd.DataFrame(rc), use_container_width=True, height=220)
-                    else:
-                        st.write("—")
+                    st.dataframe(pd.DataFrame(rc), use_container_width=True, height=220) if rc else st.write("—")
                 with cB:
                     st.markdown("<div class='wow-mini'><b>MDR/ADR</b></div>", unsafe_allow_html=True)
-                    if md:
-                        st.dataframe(pd.DataFrame(md), use_container_width=True, height=220)
-                    else:
-                        st.write("—")
+                    st.dataframe(pd.DataFrame(md), use_container_width=True, height=220) if md else st.write("—")
                 with cC:
                     st.markdown("<div class='wow-mini'><b>GUDID</b></div>", unsafe_allow_html=True)
-                    if gu:
-                        st.dataframe(pd.DataFrame(gu), use_container_width=True, height=220)
-                    else:
-                        st.write("—")
+                    st.dataframe(pd.DataFrame(gu), use_container_width=True, height=220) if gu else st.write("—")
 
                 st.divider()
                 results = engine.search_all(query)
@@ -2046,12 +2395,13 @@ else:
                     if results[name]:
                         st.dataframe(pd.DataFrame([r.record for r in results[name]]), use_container_width=True, height=220)
 
+        # Agent Outputs
         with b1:
             if not agents_cfg or not agents_cfg.agents:
                 st.warning("No agents loaded. Upload or edit agents.yaml in the sidebar.")
             else:
                 agent_names = [f"{a.name} ({a.id})" for a in agents_cfg.agents]
-                pick = st.selectbox("Select agent", agent_names, index=0)
+                pick = st.selectbox("Select agent", agent_names, index=0, key="agent_pick")
                 agent = agents_cfg.agents[agent_names.index(pick)]
 
                 pmap = provider_model_map()
@@ -2059,22 +2409,21 @@ else:
                     t(lang, "provider"),
                     list(pmap.keys()),
                     index=(list(pmap.keys()).index(agent.provider) if agent.provider in pmap else 0),
+                    key="agent_provider",
                 )
-                model = st.selectbox(t(lang, "model"), pmap[provider], index=0)
+                model = st.selectbox(t(lang, "model"), pmap[provider], index=0, key="agent_model")
+                max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=12000, step=256, key="agent_max_tokens")
 
-                # User requested: default 12000 (even if agents.yaml has smaller)
-                max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=12000, step=256)
+                system_prompt = st.text_area(t(lang, "system_prompt"), value=agent.system_prompt, height=140, key="agent_system_prompt")
+                user_prompt = st.text_area(t(lang, "user_prompt"), value=agent.user_prompt, height=140, key="agent_user_prompt")
 
-                system_prompt = st.text_area(t(lang, "system_prompt"), value=agent.system_prompt, height=140)
-                user_prompt = st.text_area(t(lang, "user_prompt"), value=agent.user_prompt, height=140)
-
-                # Input source selector (still: last edited output preferred)
                 source_choice = st.radio(
                     t(lang, "agent_input_source"),
                     [t(lang, "use_last_output"), t(lang, "use_ocr_text"), t(lang, "use_raw_text")],
                     index=0,
-                    horizontal=False,
+                    key="agent_input_source",
                 )
+
                 last = st.session_state["agent_outputs"][-1]["edited_output"] if st.session_state["agent_outputs"] else ""
                 if source_choice == t(lang, "use_last_output") and last.strip():
                     base_input = last
@@ -2085,7 +2434,7 @@ else:
 
                 run_colA, run_colB = st.columns([1, 1])
                 with run_colA:
-                    if st.button(t(lang, "execute_next"), use_container_width=True):
+                    if st.button(t(lang, "execute_next"), use_container_width=True, key="agent_execute"):
                         env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "xai": "XAI_API_KEY"}[
                             provider
                         ]
@@ -2120,12 +2469,11 @@ else:
                                 st.error(f"Agent run failed: {e}")
 
                 with run_colB:
-                    if st.button("Append last output to Final Report", use_container_width=True):
+                    if st.button("Append last output to Final Report", use_container_width=True, key="agent_append_final"):
                         if st.session_state["agent_outputs"]:
                             st.session_state["final_report"] += "\n\n" + st.session_state["agent_outputs"][-1]["edited_output"]
 
                 st.divider()
-                # Run history with editable chaining
                 if st.session_state["agent_outputs"]:
                     for i, run in enumerate(reversed(st.session_state["agent_outputs"])):
                         idx = len(st.session_state["agent_outputs"]) - 1 - i
@@ -2145,39 +2493,280 @@ else:
                                 key=f"edited_{idx}",
                             )
 
+        # Final Report
         with b3:
             report_tabs = st.tabs([t(lang, "markdown_edit"), t(lang, "render")])
             with report_tabs[0]:
-                st.session_state["final_report"] = st.text_area("Final Report (Markdown)", st.session_state["final_report"], height=540)
+                st.session_state["final_report"] = st.text_area("Final Report (Markdown)", st.session_state["final_report"], height=540, key="final_md")
             with report_tabs[1]:
                 html = coral_highlight(st.session_state["final_report"])
                 st.markdown(f"<div class='wow-card editor-frame'>{html}</div>", unsafe_allow_html=True)
 
+        # Dataset Studio (NEW)
+        with b4:
+            st.markdown(f"<div class='wow-card'><h3 style='margin:0'>{t(lang,'dataset_studio')}</h3></div>", unsafe_allow_html=True)
+
+            ds_type = st.selectbox(
+                t(lang, "dataset_type"),
+                ["510k", "recall", "adr", "gudid"],
+                index=0,
+                key="ds_type",
+            )
+
+            st.markdown(f"<div class='wow-mini'><b>{t(lang,'paste_dataset')}</b></div>", unsafe_allow_html=True)
+            st.session_state["ds_input_text"] = st.text_area("", st.session_state["ds_input_text"], height=160, key="ds_input_text")
+
+            upl = st.file_uploader(t(lang, "upload_dataset"), type=["csv", "json", "txt", "md"], key="ds_upload")
+            st.caption("Supported: CSV/JSON/TXT. JSON can be a list of objects or wrapped under keys like data/records/items.")
+
+            colL, colR = st.columns([1, 1])
+            with colL:
+                if st.button(t(lang, "parse_load"), use_container_width=True, key="ds_parse_load"):
+                    try:
+                        if upl is not None:
+                            df_in = parse_dataset_blob(upl.read(), filename=upl.name)
+                        else:
+                            df_in = parse_dataset_blob(st.session_state["ds_input_text"], filename=None)
+
+                        df_std, rep = standardize_df(ds_type, df_in)
+                        st.session_state["ds_std_report"] = rep
+
+                        if ds_type == "510k":
+                            st.session_state["df_510k"] = df_std
+                        elif ds_type == "adr":
+                            st.session_state["df_adr"] = df_std
+                        elif ds_type == "gudid":
+                            st.session_state["df_gudid"] = df_std
+                        else:
+                            st.session_state["df_recall"] = df_std
+
+                        st.session_state["ds_filtered_df"] = pd.DataFrame()
+                        st.session_state["ds_summary_md"] = ""
+                        st.session_state["ds_query_md"] = ""
+
+                        # Rebuild engine so global search uses new datasets
+                        engine = build_engine_from_session()
+                        st.success(f"{ds_type} loaded & standardized. {t(lang,'loaded_rows')}: {len(df_std)}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Load failed: {e}")
+
+            with colR:
+                if st.button(t(lang, "reset_defaults"), use_container_width=True, key="ds_reset_defaults"):
+                    st.session_state["df_510k"] = pd.DataFrame(DEFAULT_510K)
+                    st.session_state["df_adr"] = pd.DataFrame(DEFAULT_ADR)
+                    st.session_state["df_gudid"] = pd.DataFrame(DEFAULT_GUDID)
+                    st.session_state["df_recall"] = pd.DataFrame(DEFAULT_RECALL)
+                    st.session_state["ds_std_report"] = ""
+                    st.session_state["ds_filtered_df"] = pd.DataFrame()
+                    st.session_state["ds_summary_md"] = ""
+                    st.session_state["ds_query_md"] = ""
+                    engine = build_engine_from_session()
+                    st.rerun()
+
+            if st.session_state["ds_std_report"]:
+                with st.expander(t(lang, "standardization_report"), expanded=False):
+                    st.markdown(st.session_state["ds_std_report"])
+
+            # Choose current df by ds_type
+            cur_df = (
+                st.session_state["df_510k"] if ds_type == "510k"
+                else st.session_state["df_adr"] if ds_type == "adr"
+                else st.session_state["df_gudid"] if ds_type == "gudid"
+                else st.session_state["df_recall"]
+            )
+
+            st.markdown(f"<div class='wow-mini'><b>{t(lang,'preview')}</b></div>", unsafe_allow_html=True)
+            st.caption(f"{t(lang,'loaded_rows')}: {len(cur_df)}")
+            st.dataframe(cur_df.head(20), use_container_width=True, height=260)
+
+            # Download standardized dataset
+            dcol1, dcol2 = st.columns([1, 1])
+            with dcol1:
+                st.download_button(
+                    t(lang, "download_csv"),
+                    data=cur_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"{ds_type}_standardized.csv",
+                    use_container_width=True,
+                    key="ds_dl_csv",
+                )
+            with dcol2:
+                st.download_button(
+                    t(lang, "download_json"),
+                    data=df_to_json_records(cur_df).encode("utf-8"),
+                    file_name=f"{ds_type}_standardized.json",
+                    use_container_width=True,
+                    key="ds_dl_json",
+                )
+
+            st.divider()
+
+            # Summary generation (1000~2000 words target)
+            st.markdown(f"<div class='wow-mini'><b>{t(lang,'dataset_summary')}</b></div>", unsafe_allow_html=True)
+
+            pmap = provider_model_map()
+            sum_provider = st.selectbox(t(lang, "provider"), list(pmap.keys()), index=0, key="ds_sum_provider")
+            sum_model = st.selectbox(t(lang, "model"), pmap[sum_provider], index=0, key="ds_sum_model")
+            sum_max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=12000, step=256, key="ds_sum_max_tokens")
+
+            default_sum_prompt = (
+                "請根據提供的資料集（已標準化）撰寫一份全面摘要（Markdown），目標長度 1000~2000 字。\n"
+                "摘要需包含：\n"
+                "1) 資料集概況（筆數、欄位、缺漏、可用性）\n"
+                "2) 關鍵欄位的主要分佈/常見值（例如 product_code、recall_class、patient_outcome、mri_safety 等，視資料集類型而定）\n"
+                "3) 明顯異常/缺口（例如關鍵欄位大量缺漏、格式不一致、可疑值）\n"
+                "4) 可用於法規審查的洞察（例如：召回等級與原因模式、MDR 事件模式、GUDID 屬性風險線索、510(k) predicate 線索）\n"
+                "5) 建議下一步（適合在本系統內用關鍵字搜尋/代理分析的方向）\n"
+                "注意：不可捏造資料；只能根據提供內容推導，推定需標註為推定。"
+            ) if lang == "zh-TW" else (
+                "Write a comprehensive Markdown summary of the standardized dataset (target 1000–2000 words). Include:\n"
+                "1) dataset overview (rows, columns, missingness, usability)\n"
+                "2) key field distributions/top values\n"
+                "3) anomalies/gaps (missing critical fields, inconsistent formats)\n"
+                "4) regulatory review insights\n"
+                "5) recommended next steps for keyword search and agent analysis\n"
+                "Do not fabricate; only infer from provided content; label assumptions."
+            )
+
+            st.session_state["ds_summary_prompt"] = st.text_area(
+                "Summary prompt",
+                value=st.session_state["ds_summary_prompt"] or default_sum_prompt,
+                height=180,
+                key="ds_summary_prompt",
+            )
+
+            if st.button(t(lang, "generate_summary"), use_container_width=True, key="ds_generate_summary"):
+                env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "xai": "XAI_API_KEY"}[
+                    sum_provider
+                ]
+                api_key = env_or_session(env_name)
+                if not api_key:
+                    st.error(f"{env_name} missing.")
+                else:
+                    ctx = dataset_context_markdown(ds_type, cur_df, max_rows=50)
+                    sys = "You are a regulatory data analyst. Output Markdown." if lang != "zh-TW" else "你是法規資料分析專家，請輸出 Markdown。"
+                    user = st.session_state["ds_summary_prompt"].strip() + "\n\n---\n" + ctx
+                    try:
+                        out = call_llm_text(sum_provider, sum_model, api_key, sys, user, max_tokens=int(sum_max_tokens), temperature=0.2)
+                        st.session_state["ds_summary_md"] = out
+                    except Exception as e:
+                        st.error(f"Summary failed: {e}")
+
+            # Summary editors
+            sum_tabs = st.tabs([t(lang, "markdown_edit"), t(lang, "render")])
+            with sum_tabs[0]:
+                st.session_state["ds_summary_md"] = st.text_area(
+                    "Summary Markdown",
+                    value=st.session_state["ds_summary_md"],
+                    height=320,
+                    key="ds_summary_md_edit",
+                )
+            with sum_tabs[1]:
+                html = coral_highlight(st.session_state["ds_summary_md"])
+                st.markdown(f"<div class='wow-card editor-frame'>{html}</div>", unsafe_allow_html=True)
+
+            st.divider()
+
+            # Dataset query: keyword search + LLM prompt
+            st.markdown(f"<div class='wow-mini'><b>{t(lang,'dataset_query')}</b></div>", unsafe_allow_html=True)
+
+            st.session_state["ds_keyword"] = st.text_input(t(lang, "keyword_search"), value=st.session_state["ds_keyword"], key="ds_keyword_input")
+
+            fcol1, fcol2 = st.columns([1, 1])
+            with fcol1:
+                if st.button(t(lang, "filter_results"), use_container_width=True, key="ds_filter_btn"):
+                    st.session_state["ds_filtered_df"] = keyword_filter_df(cur_df, st.session_state["ds_keyword"], limit=50)
+
+            with fcol2:
+                use_filtered = st.checkbox(t(lang, "use_filtered"), value=True, key="ds_use_filtered")
+
+            filtered_df = st.session_state["ds_filtered_df"]
+            if isinstance(filtered_df, pd.DataFrame) and not filtered_df.empty:
+                st.caption(f"Filtered rows: {len(filtered_df)}")
+                st.dataframe(filtered_df.head(20), use_container_width=True, height=220)
+            elif st.session_state["ds_keyword"].strip():
+                st.caption("No matches (or not filtered yet).")
+
+            qmap = provider_model_map()
+            q_provider = st.selectbox(t(lang, "provider"), list(qmap.keys()), index=0, key="ds_q_provider")
+            q_model = st.selectbox(t(lang, "model"), qmap[q_provider], index=0, key="ds_q_model")
+            q_max_tokens = st.number_input(t(lang, "max_tokens"), min_value=512, max_value=12000, value=12000, step=256, key="ds_q_max_tokens")
+            rows_in_ctx = st.number_input(t(lang, "rows_in_context"), min_value=5, max_value=200, value=50, step=5, key="ds_rows_in_ctx")
+
+            default_q_prompt = (
+                "請根據提供的資料集回答以下問題，輸出 Markdown。\n"
+                "- 請先列出你使用到的欄位與推導步驟（可簡要）。\n"
+                "- 若資料不足，請以 Gap 標註並說明需要的欄位或資料。\n\n"
+                "問題：\n"
+            ) if lang == "zh-TW" else (
+                "Answer the question based on the provided dataset context. Output Markdown.\n"
+                "- List the fields used and reasoning steps briefly.\n"
+                "- If insufficient data, mark as Gap and specify needed fields.\n\n"
+                "Question:\n"
+            )
+
+            st.session_state["ds_query_prompt"] = st.text_area(
+                t(lang, "llm_prompt"),
+                value=st.session_state["ds_query_prompt"] or default_q_prompt,
+                height=160,
+                key="ds_query_prompt",
+            )
+
+            if st.button(t(lang, "run_query"), use_container_width=True, key="ds_run_query"):
+                env_name = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "xai": "XAI_API_KEY"}[
+                    q_provider
+                ]
+                api_key = env_or_session(env_name)
+                if not api_key:
+                    st.error(f"{env_name} missing.")
+                else:
+                    use_df = filtered_df if (use_filtered and isinstance(filtered_df, pd.DataFrame) and not filtered_df.empty) else cur_df
+                    ctx = dataset_context_markdown(ds_type, use_df, max_rows=int(rows_in_ctx))
+                    sys = "You are a regulatory dataset analyst. Output Markdown." if lang != "zh-TW" else "你是法規資料集分析助理，請輸出 Markdown。"
+                    user = st.session_state["ds_query_prompt"].strip() + "\n\n---\n" + ctx
+                    try:
+                        out = call_llm_text(q_provider, q_model, api_key, sys, user, max_tokens=int(q_max_tokens), temperature=0.2)
+                        st.session_state["ds_query_md"] = out
+                    except Exception as e:
+                        st.error(f"Query failed: {e}")
+
+            q_tabs = st.tabs([t(lang, "markdown_edit"), t(lang, "render")])
+            with q_tabs[0]:
+                st.session_state["ds_query_md"] = st.text_area(
+                    t(lang, "query_results"),
+                    value=st.session_state["ds_query_md"],
+                    height=320,
+                    key="ds_query_md_edit",
+                )
+            with q_tabs[1]:
+                html = coral_highlight(st.session_state["ds_query_md"])
+                st.markdown(f"<div class='wow-card editor-frame'>{html}</div>", unsafe_allow_html=True)
+
 
 # -----------------------------
-# 20 comprehensive follow-up questions
+# 20 follow up questions
 # -----------------------------
 followups = [
-    "1) 你希望 OCR 的「頁碼/段落定位」採用哪一種規則（原始頁碼、裁切後頁碼、或兩者並存）？",
-    "2) Vision OCR 的預設策略要不要做自動判斷：若 PyPDF2 擷取文字太少或疑似表格破碎就改用 Vision？",
-    "3) 代理輸出是否需要統一加入『證據定位欄』（頁碼/段落#）並支援點擊後跳回來源面板？",
-    "4) Dashboard 的 KPI 是否要加入『最高召回等級』、『最高 MDR 嚴重度』與『Gap 計數』的總分風險指標？",
-    "5) 你希望 31 個代理是否以「產品類別模板」分組（Stapler、IVD、Infusion、Implant 等）一鍵串跑？",
-    "6) Agent chaining 的輸入來源是否要擴充：可選『搜尋結果（360 卡）』、『特定資料表列』、『Final Report』作為下一代理輸入？",
-    "7) 是否要新增『Pin Evidence』功能，把特定段落/搜尋紀錄釘選到 Final Report 附錄？",
-    "8) Coral 高亮是否要允許在 UI 裡編輯 ontology（新增/刪除詞表）並存於 session？",
-    "9) AI Note Keeper 的『Organize Note』是否要強制輸出固定章節（摘要/證據/缺口/待辦/關鍵詞）？",
-    "10) AI Keywords Highlighter 是否要支援不限 3 組關鍵詞、可動態新增列、並提供 whole-word/regex 模式？",
-    "11) 代理輸出渲染是否需要支援 Mermaid 即時渲染（目前僅輸出文字，未強制渲染圖）？",
-    "12) 你希望 agents.yaml 的 provider/model 是否要允許『每個代理多模型候選』並在 UI 一鍵切換對照結果？",
-    "13) 對 Anthropic/xAI 是否需要更細的參數（例如 reasoning effort / thinking）在 UI 顯示（若 API 支援）？",
-    "14) 是否要新增『紅線模式』：自動標記疑似誇大宣稱、用途外延、或與 Recall/MDR 相衝突的段落？",
-    "15) Search Engine 是否要加入『predicate_k_numbers 反向索引』：輸入一個 K# 可找所有引用它為 predicate 的裝置？",
-    "16) 是否要加入『輸出版本管理』：每次代理執行、每次手動編修都可回溯 diff？",
-    "17) 你希望 Final Report 是否要提供『一鍵彙編』：自動抓取最後 N 次代理輸出 + 360 卡 + Pin evidence？",
-    "18) 對 PDF Viewer 是否要加入『頁面截圖』並直接送入 Vision OCR/視覺問答（針對表格/圖）？",
-    "19) 是否要加入『PII/PHI 偵測與遮罩』在任何外部 API 呼叫前先執行（並提供遮罩預覽）？",
-    "20) 你希望整套 UI 的『Painter Styles』是否要影響字體（例如報告用 Serif、原始資料用 Mono）並提供每風格預設？",
+    "1) Dataset Studio 的『標準化』是否需要更嚴格的 schema 驗證（例如：必填欄位缺失就禁止載入）還是保留目前的寬容填補 None？",
+    "2) 你希望標準化時的欄位同義詞（synonyms）可由使用者在 UI 內編輯/新增並保存到本次 session 嗎？",
+    "3) 對於 510(k) 的 predicate_k_numbers，是否要支援從多欄位推導（例如 predicate_1、predicate_2…）並合併成 list？",
+    "4) 對於 Recall 的 recall_class，是否要在標準化階段自動正規化為 I/II/III（例如輸入 'Class 1' → 'I'）？",
+    "5) Dataset Studio 的下載是否要新增『Excel (.xlsx)』輸出以利審查員離線分享？",
+    "6) 你希望資料集摘要固定包含哪些小節標題（例如：Overview / Field Quality / Signals / Gaps / Next Steps）以便可比較不同資料集？",
+    "7) 1000~2000 字摘要是否要加入『跨資料集連結』：例如同 product_code 在 Recall 與 ADR 的共同模式（需要同時選多資料集）？",
+    "8) Dataset Query 的上下文列數是否要依模型自動調整（例如小模型 20 列、大模型 100 列）以避免 token 浪費？",
+    "9) Dataset Studio 是否要支援一次上傳四個資料集並自動建立『整體 360° 資料摘要』？",
+    "10) 關鍵字搜尋是否要支援更進階語法（AND/OR、欄位限定如 product_code:GAG、正則）？",
+    "11) 你希望資料集關鍵字搜尋結果也能直接『一鍵送入代理』作為下一代理輸入嗎？",
+    "12) Dataset Studio 是否需要加入『欄位品質報告』：唯一值比例、疑似日期格式錯誤、疑似 ID 亂碼、布林欄位非布林等？",
+    "13) 是否要加入『去重策略』：例如以 k_number/udi_di/recall_number/adverse_event_id 去重，並提供去重前後差異報告？",
+    "14) 是否要把 Dataset Studio 的標準化結果寫回檔案（workspace 內可下載）之外，也允許選擇『僅本次 session 使用，不覆蓋全域資料集』？",
+    "15) 你希望 Dataset Studio 內的 LLM Query 支援多輪對話（保留歷史）還是維持單次問答？",
+    "16) 是否要新增『資料字典生成』功能：針對每個欄位生成定義、可能值、以及審查意義？",
+    "17) 是否要新增『統計圖表』：例如 recall_class 分佈、patient_outcome 分佈、mri_safety 分佈（Plotly/Altair）？",
+    "18) Vision OCR 產生的文本是否要能一鍵抽取 K#/UDI/product_code 並自動填入 global search 與 Dataset Studio 的篩選？",
+    "19) 你希望在 Final Report 內自動附上 Dataset Summary/Query 的內容（並保留可編修）嗎？",
+    "20) 對於極大資料集（>100k rows），你希望採用什麼策略：抽樣、分段載入、或改成向量檢索/RAG 架構？",
 ]
 st.markdown("<div class='wow-card'><h4 style='margin:0'>20 Follow-up Questions</h4></div>", unsafe_allow_html=True)
 st.write("\n".join(followups))
